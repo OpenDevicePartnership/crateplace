@@ -34,10 +34,10 @@ Ensure to delete or rename the existing `memory.x` as it will conflict with the 
 
 Alternatively the files can be made manually. The default `Memory.toml` looks like this:
 ```
-ram = { origin = \"0x20000000\", length = \"128K\" }
+ram = { origin = "0x20000000", length = "128K" }
 
 [sections]
-flash = { origin = \"0x00000000\", length = \"1M\", priority = 1 }
+flash = { origin = "0x00000000\", length = "1M", priority = 1 }
 
 [crates]
 ```
@@ -60,8 +60,7 @@ The `Memory.toml` contains the following configuration:
 This defines the position of ram in memory.
 It is defined by a start offset and length just like in `memory.x`.
 ```
-[sections]
-ram = { origin = \"0x20000000\", length = \"128K\" }
+ram = { origin = "0x20000000", length = "128K" }
 ```
 ### Sections
 The definition of flash sections.
@@ -71,7 +70,7 @@ Additionally they must be assigned a `piority`.
 The lowest priority will be assigned when a dependency is shared by two assigned crates.
 Then there is the `default` option which is where all unspecified crates will end up if a section is marked with `default=true`.
 ```
-[crates]
+[sections]
 flash = { origin = "0x00000000", length = "512K", priority = 1 }
 second_flash = { origin = "512K", length = "512K", priority = 2, default = true}
 ```
