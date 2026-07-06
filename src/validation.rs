@@ -14,6 +14,7 @@ use crate::config;
 use crate::config::Config;
 use crate::config::Section;
 use crate::deps::DepTree;
+use crate::mangling;
 
 #[derive(Debug, Clone)]
 pub enum ProblemLevel {
@@ -54,7 +55,7 @@ pub enum ValidationProblem {
     },
     #[error("Unknown mangling scheme: \"{name}, mangled: \"{mangled_name}\"")]
     UnknownManglingScheme { name: String, mangled_name: String },
-    #[error("Failed to identify crate: \"{name}\"")]
+    #[error("Failed to identify crate of: \"{name}\"")]
     NoCrateName { name: String },
     #[error("Failed to classify symbol: \"{name}\"")]
     ClassificationFailure { name: String },
@@ -142,7 +143,6 @@ impl<T> IOToValidationError<T> for Result<T, io::Error> {
 }
 #[derive(Clone, Debug)]
 pub enum SymbolClass {
-    NotMangled,
     RustMangled {
         demangled: String,
         crate_name: String,
@@ -156,6 +156,7 @@ pub enum SymbolClass {
     Defmt,
     Main,
     CortexMShenanigans,
+    Ignored,
 }
 
 #[derive(Clone, Debug)]
@@ -171,7 +172,6 @@ impl fmt::Display for ValidationSymbol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name)?;
         match &self.class {
-            SymbolClass::NotMangled => (),
             SymbolClass::RustMangled {
                 demangled,
                 crate_name,
@@ -191,6 +191,7 @@ impl fmt::Display for ValidationSymbol {
             SymbolClass::OtherLang => write!(f, ": OtherLanguage")?,
             SymbolClass::RustCrateLess => write!(f, ": RustCrateLess")?,
             SymbolClass::CortexMShenanigans => write!(f, ": CortexMSpecial")?,
+            SymbolClass::Ignored => write!(f, ": Ignored")?,
         }
         write!(
             f,
@@ -229,10 +230,27 @@ fn v0_extract(symbol: &str) -> Option<String> {
     Some(chars.take(len).collect())
 }
 
+fn legacy_extract(symbol: &str) -> Option<String> {
+    let mut chars = symbol.chars().peekable();
+    skip_until(&mut chars, 'N')?;
+    let len = read_number(&mut chars)?;
+    let name: String = chars.take(len).collect();
+    if name.starts_with('_') {
+        Some(name.split("..").next()?.split("$").last()?.to_string())
+    } else {
+        Some(name)
+    }
+}
+
 fn extract_crate_name(symbol: &str) -> Result<String, ValidationProblem> {
-    v0_extract(symbol).ok_or_else(|| ValidationProblem::NoCrateName {
-        name: symbol.to_string(),
-    })
+    mangling::ManglingVersion::from_mangling_string_prefix(symbol)
+        .and_then(|scheme| match scheme {
+            mangling::ManglingVersion::Legacy => legacy_extract(symbol),
+            mangling::ManglingVersion::V0 => v0_extract(symbol),
+        })
+        .ok_or(ValidationProblem::NoCrateName {
+            name: symbol.to_string(),
+        })
 }
 
 fn classify_rust_symbol(
@@ -240,8 +258,8 @@ fn classify_rust_symbol(
     linkage_name: &str,
     namespace_root: Option<&str>,
 ) -> Result<SymbolClass, ValidationProblem> {
-    if linkage_name == name {
-        return Ok(SymbolClass::NotMangled);
+    if ignore(name) {
+        return Ok(SymbolClass::Ignored);
     }
     if let Ok(rust_demangled) = rustc_demangle::try_demangle(linkage_name) {
         let demangled = rust_demangled.to_string();
@@ -395,10 +413,13 @@ fn ignore(name: &str) -> bool {
         || name.starts_with("_critical_section")
         || name == "Reset"
         || name == "__DEFMT_MARKER_TIMESTAMP_WAS_DEFINED"
+        || name == "_MergedGlobals"
+        || name == "__pre_init"
+        || name == "pre_init"
 }
 
 fn late_classify(name: &str) -> Result<SymbolClass, ValidationProblem> {
-    if name.contains("core") && (name.starts_with("_R") || name.starts_with("_ZN")) {
+    if name.starts_with("_R") || name.starts_with("_ZN") {
         classify_rust_symbol("", name, None)
     } else {
         Err(ValidationProblem::ClassificationFailure {
@@ -418,16 +439,25 @@ fn load_binary(
         .symbols()
         .filter_map(|symbol| {
             let name = symbol.name().ok()?.to_string();
-            if symbol.size() == 0 || ignore(&name) {
+            let name = if name.starts_with(".L")
+                && let Some(trimmed_name) = name.find("_").and_then(|pos| name.get(pos..))
+            {
+                trimmed_name
+            } else {
+                &name
+            };
+            if symbol.size() == 0 || ignore(name) {
                 return None;
             }
-            let class = match classifications.remove(&name) {
+            let class = match classifications.remove(name) {
                 Some(SymbolClass::RustCrateLess) => {
-                    problems.push(ValidationProblem::NoCrateName { name });
+                    problems.push(ValidationProblem::NoCrateName {
+                        name: name.to_string(),
+                    });
                     return None;
                 }
                 Some(class) => class,
-                None => match late_classify(&name) {
+                None => match late_classify(name) {
                     Ok(class) => class,
                     Err(problem) => {
                         problems.push(problem);
@@ -437,7 +467,7 @@ fn load_binary(
             };
             let address = symbol.address();
             Some(ValidationSymbol {
-                name,
+                name: name.to_string(),
                 class,
                 section: symbol
                     .section()
@@ -475,11 +505,6 @@ fn get_assignment_with_crate<'c, 'd>(
             return Ok(None);
         }
     };
-
-    // println!(
-    //     "Symbol: {symbol_name} belonging to {crate_name} is assigned to: {}",
-    //     assigned_section.name
-    // );
     Ok(Some(Assignment {
         section_name: &assigned_section.name,
         section: config.sections.get(&assigned_section.name).ok_or_else(|| {
@@ -565,6 +590,7 @@ fn validate_placement(
             | SymbolClass::OtherLang
             | SymbolClass::Main
             | SymbolClass::Defmt
+            | SymbolClass::Ignored
             | SymbolClass::CortexMShenanigans => return Ok(()),
         },
     };
@@ -641,9 +667,7 @@ pub(crate) fn validate(
 ) -> Result<Vec<ValidationProblem>, ValidationError> {
     let mut problems = Vec::new();
     let binary = load_binary(&mut problems, binary_file)?;
-    //pintln!("assignments: {assignments:?}");
     for symbol in &binary {
-        //println!("Validating symbol: {symbol}");
         if let Err(problem) = validate_placement(symbol, assignments, config) {
             problems.push(problem);
         }
