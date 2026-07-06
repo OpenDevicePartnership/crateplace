@@ -3,17 +3,24 @@ pub mod config;
 pub mod deps;
 mod generation;
 pub mod init;
+pub mod mangling;
+pub mod validation;
 use crate::{
     assignment::{AssignmentError, assign},
     config::{Config, ConfigValidationError},
     deps::{DepTree, Inverted},
+    mangling::{ManglingDetectionError, ManglingVersion, rustc_mangling_version},
+    validation::{ValidationError, ValidationProblem},
 };
+use cargo_metadata::Message;
 use deps::{DepsError, get_deps};
 use std::{
+    env,
     error::Error,
     fs::File,
     io::{self, Write},
     path::{Path, PathBuf},
+    process::{Command, Stdio},
 };
 
 const DEFAULT_CONFIG_NAME: &str = "Memory.toml";
@@ -59,6 +66,23 @@ pub enum CratePlacerError {
         #[from]
         ConfigValidationError,
     ),
+    #[error("Failed to detect mangling version")]
+    ManglingDetectionError(
+        #[source]
+        #[from]
+        ManglingDetectionError,
+    ),
+
+    #[error("Validation")]
+    ValidationError(
+        #[source]
+        #[from]
+        ValidationError,
+    ),
+    #[error("Build error")]
+    BuildError,
+    #[error("Project has no output binary")]
+    NoOutputBinary,
 }
 
 pub fn report(mut err: &dyn Error) {
@@ -82,6 +106,21 @@ impl<T> IOToCratePlaceError<T> for Result<T, io::Error> {
     }
 }
 
+fn divine_mangling() -> Result<ManglingVersion, CratePlacerError> {
+    let flags = env::var("CARGO_ENCODED_RUSTFLAGS");
+    let flags = flags.iter().flat_map(|flags| flags.split('\x1f'));
+
+    let target = env::var("TARGET");
+    let target = target
+        .iter()
+        .flat_map(|target| ["--target", target.as_str()].into_iter());
+
+    Ok(rustc_mangling_version(
+        env::var("RUSTC").ok().as_deref(),
+        flags.chain(target).filter(|arg| !arg.is_empty()),
+    )?)
+}
+
 #[derive(Clone, Debug)]
 pub struct CratePlacer<'p> {
     manifest: Option<&'p Path>,
@@ -98,7 +137,7 @@ impl<'p> Default for CratePlacer<'p> {
 }
 
 pub(crate) fn look_up(filename: &Path) -> Option<PathBuf> {
-    let curdir = std::env::current_dir().ok()?;
+    let curdir = env::current_dir().ok()?;
     let mut dir = curdir.as_path();
     loop {
         let dirlist = std::fs::read_dir(dir);
@@ -195,7 +234,7 @@ impl<'p> CratePlacer<'p> {
                 Ok(manifest_dir.to_path_buf())
             } else {
                 Ok(PathBuf::from(
-                    std::env::var_os("OUT_DIR").ok_or(CratePlacerError::NoOutput)?,
+                    env::var_os("OUT_DIR").ok_or(CratePlacerError::NoOutput)?,
                 ))
             }
         }
@@ -245,14 +284,28 @@ impl<'p> CratePlacer<'p> {
         Ok(())
     }
 
-    pub fn get_linkerscript(&mut self) -> Result<String, CratePlacerError> {
+    pub fn get_linkerscript(
+        &mut self,
+        mangling: Option<ManglingVersion>,
+    ) -> Result<String, CratePlacerError> {
         let deps = self.get_assigned_deps()?;
         let config = self.get_config()?;
-        Ok(generation::generate_script(config, &deps))
+        let mangling = match mangling {
+            Some(mangling) => mangling,
+            None => divine_mangling()?,
+        };
+        let mangling = match mangling {
+            ManglingVersion::Legacy => generation::ManglingMatches::All,
+            ManglingVersion::V0 => generation::ManglingMatches::V0,
+        };
+        Ok(generation::generate_script(config, &deps, mangling))
     }
 
-    pub fn write_linkerscript(&mut self) -> Result<(), CratePlacerError> {
-        let linkerscript = self.get_linkerscript()?;
+    pub fn write_linkerscript(
+        &mut self,
+        mangling: Option<ManglingVersion>,
+    ) -> Result<(), CratePlacerError> {
+        let linkerscript = self.get_linkerscript(mangling)?;
         if self.stdout {
             println!("{}", linkerscript);
         } else {
@@ -274,7 +327,52 @@ impl<'p> CratePlacer<'p> {
             "cargo:rustc-link-search={}",
             self.get_output_dir()?.to_string_lossy()
         );
-        self.write_linkerscript()?;
+
+        self.write_linkerscript(None)?;
         Ok(())
+    }
+
+    pub fn validate(
+        &mut self,
+        output_file: &Path,
+    ) -> Result<Vec<ValidationProblem>, CratePlacerError> {
+        let mut deps = get_deps(self.manifest)?;
+        let config = self.get_config()?;
+        config.validate()?;
+        assign(config, &mut deps)?;
+        Ok(validation::validate(output_file, &deps, config)?)
+    }
+
+    pub fn build_then_validate(&mut self) -> Result<Vec<ValidationProblem>, CratePlacerError> {
+        let mut cmd = Command::new("cargo");
+        cmd.args(["build", "--message-format=json"]);
+        if let Some(manifest) = self.manifest {
+            cmd.args(["--manifest-path", &manifest.to_string_lossy()]);
+        }
+        let mut proc = cmd
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|_| CratePlacerError::BuildError)?;
+
+        let reader =
+            std::io::BufReader::new(proc.stdout.take().ok_or(CratePlacerError::BuildError)?);
+        let mut output = None;
+        for message in Message::parse_stream(reader) {
+            if let Message::CompilerArtifact(artifact) =
+                message.map_err(|_| CratePlacerError::BuildError)?
+                && let Some(exec) = artifact.executable
+            {
+                output = Some(exec);
+            }
+        }
+        match proc.wait() {
+            Ok(status) => {
+                if !status.success() {
+                    return Err(CratePlacerError::BuildError);
+                }
+            }
+            Err(_) => return Err(CratePlacerError::BuildError),
+        };
+        self.validate(Path::new(&output.ok_or(CratePlacerError::NoOutputBinary)?))
     }
 }

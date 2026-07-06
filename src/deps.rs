@@ -62,6 +62,17 @@ pub struct Crate {
     pub assignment: Option<SectionAssignment>,
 }
 
+impl Crate {
+    fn base_dep(name: String) -> Self {
+        Crate {
+            name,
+            version: Version::new(0, 0, 0),
+            dependencies: Vec::new(),
+            assignment: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Inverted {
     Not,
@@ -276,7 +287,7 @@ pub fn get_deps(manifest_path: Option<&Path>) -> Result<DepTree, DepsError> {
         .repr
         .clone();
     let deps = meta.resolve.ok_or(DepsError::NoDeps)?;
-    let res = deps
+    let mut res = deps
         .nodes
         .iter()
         .map(|node| -> Result<(String, Crate), DepsError> {
@@ -303,6 +314,13 @@ pub fn get_deps(manifest_path: Option<&Path>) -> Result<DepTree, DepsError> {
             ))
         })
         .collect::<Result<BTreeMap<String, Crate>, DepsError>>()?;
+
+    res.extend(
+        ["core", "std", "compiler_builtins", "__rustc"]
+            .iter()
+            .map(|name| (name.to_string(), Crate::base_dep(name.to_string()))),
+    );
+
     Ok(DepTree {
         root,
         crates: res,

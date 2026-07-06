@@ -1,8 +1,19 @@
+use clap::builder::styling::{AnsiColor, Color, Style};
 use clap::{Parser, Subcommand};
-use crateplace::{CratePlacer, CratePlacerError, deps::Inverted, init::InitError, report};
+use crateplace::validation::ProblemLevel;
+use crateplace::{
+    CratePlacer, CratePlacerError,
+    deps::Inverted,
+    init::InitError,
+    mangling::{ManglingDetectionError, rustc_mangling_version},
+    report,
+    validation::ValidationError,
+};
 use std::{
     env,
+    iter::Iterator,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 use thiserror::Error;
 
@@ -20,6 +31,49 @@ enum CommandlineError {
         #[from]
         InitError,
     ),
+    #[error("Mangling detection")]
+    ManglingDetection(
+        #[source]
+        #[from]
+        ManglingDetectionError,
+    ),
+    #[error("Validation")]
+    Validation(
+        #[source]
+        #[from]
+        ValidationError,
+    ),
+}
+
+#[derive(Copy, Clone, Debug)]
+enum ManglingVersion {
+    Legacy,
+    V0,
+}
+
+#[derive(thiserror::Error, Debug)]
+#[error("Unrecognized mangling version")]
+struct ManglingParseError;
+
+impl FromStr for ManglingVersion {
+    type Err = ManglingParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "legacy" => Ok(Self::Legacy),
+            "v0" => Ok(Self::V0),
+            _ => Err(ManglingParseError),
+        }
+    }
+}
+
+impl From<ManglingVersion> for crateplace::mangling::ManglingVersion {
+    fn from(value: ManglingVersion) -> Self {
+        match value {
+            ManglingVersion::Legacy => crateplace::mangling::ManglingVersion::Legacy,
+            ManglingVersion::V0 => crateplace::mangling::ManglingVersion::V0,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -44,16 +98,30 @@ enum Command {
         /// Print to screen instead of making output file
         #[arg(short, long)]
         stdout: bool,
+        /// Mangling version to use for script generation
+        #[arg(short, long)]
+        rustc_mangling_version: Option<ManglingVersion>,
     },
     /// Setup default build.rs and Memory.toml files
     Init,
+    /// Determine mangling version of rustc in path
+    ManglingVersion {
+        /// Rustc path
+        #[arg(short, long)]
+        rustc: Option<String>,
+    },
+    /// Validate the output using debug info
+    Validate {
+        /// Path to binary file
+        binary: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, Parser)]
 struct Commandline {
     /// Cargo.toml file of the target crate
     #[arg(short, long, global = true)]
-    manifest: Option<PathBuf>,
+    manifest_path: Option<PathBuf>,
     /// Config file to use, default: `Memory.toml`
     #[arg(short, long, global = true)]
     config: Option<PathBuf>,
@@ -78,24 +146,64 @@ fn perform_command(
             show_unspecified,
             no_dedupe,
             invert,
+        } => placer.display_tree(
+            show_unspecified,
+            no_dedupe,
+            match invert {
+                Some(dep) => Inverted::Inverted(dep),
+                None => Inverted::Not,
+            },
+        )?,
+        Command::MakeScript {
+            output,
+            stdout,
+            rustc_mangling_version,
         } => {
-            placer.display_tree(
-                show_unspecified,
-                no_dedupe,
-                match invert {
-                    Some(dep) => Inverted::Inverted(dep),
-                    None => Inverted::Not,
-                },
-            )?;
-        }
-        Command::MakeScript { output, stdout } => {
             if let Some(output) = &output {
                 placer.output(output.as_path());
             }
             placer.stdout(stdout);
-            placer.write_linkerscript()?
+            placer.write_linkerscript(rustc_mangling_version.map(Into::into))?
         }
         Command::Init => crateplace::init::init(manifest)?,
+        Command::ManglingVersion { rustc } => {
+            let flags = std::env::var("RUSTFLAGS").ok();
+            let rustflags = flags
+                .as_ref()
+                .map(|flags| flags.split_whitespace())
+                .into_iter()
+                .flatten();
+            let version = rustc_mangling_version(rustc.as_deref(), rustflags)?;
+            println!("{version}");
+        }
+        Command::Validate { binary } => {
+            let problems = match binary {
+                Some(binary) => placer.validate(&binary),
+                None => placer.build_then_validate(),
+            }?;
+            for problem in &problems {
+                let error = Style::new()
+                    .fg_color(Some(Color::Ansi(AnsiColor::Red)))
+                    .bold();
+                let warning = Style::new()
+                    .fg_color(Some(Color::Ansi(AnsiColor::Yellow)))
+                    .bold();
+
+                let prep = match problem.problem_level() {
+                    ProblemLevel::Error => {
+                        format!("{error}Error:{error:#}")
+                    }
+                    ProblemLevel::Warning => {
+                        format!("{warning}Warning:{warning:#}")
+                    }
+                };
+
+                println!("{prep} {problem}");
+            }
+            if !problems.is_empty() {
+                std::process::exit(2);
+            }
+        }
     }
     Ok(())
 }
@@ -108,10 +216,11 @@ fn main() {
     }
     let args = Commandline::parse_from(args);
     if let Err(err) = perform_command(
-        args.manifest.as_deref(),
+        args.manifest_path.as_deref(),
         args.config.as_deref(),
         args.command,
     ) {
         report(&err);
+        std::process::exit(1);
     }
 }

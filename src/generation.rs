@@ -5,6 +5,38 @@ fn section_name_to_target(name: &str) -> String {
     name.replace("-", "").replace("_", "").to_uppercase()
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum ManglingMatches {
+    #[allow(dead_code)]
+    Legacy,
+    V0,
+    All,
+}
+
+fn v0_matches(name: &str) -> Vec<String> {
+    (0..26)
+        .map(|num| format!("_R{}_{}{name}", "[a-zA-Z0-9_]".repeat(num), name.len()))
+        .collect()
+}
+
+fn legacy_matches(name: &str) -> Vec<String> {
+    let mut res = vec![format!("_ZN{}{name}", name.len())];
+    res.extend((0..32).map(|num| format!("_ZN{}${name}", "[a-zA-Z0-9_$]".repeat(num))));
+    res
+}
+
+fn generate_mangling_matches(name: &str, mangling: ManglingMatches) -> Vec<String> {
+    match mangling {
+        ManglingMatches::Legacy => legacy_matches(name),
+        ManglingMatches::V0 => v0_matches(name),
+        ManglingMatches::All => {
+            let mut matches = legacy_matches(name);
+            matches.append(&mut v0_matches(name));
+            matches
+        }
+    }
+}
+
 fn generate_memory(config: &Config) -> String {
     config
         .sections
@@ -17,11 +49,10 @@ fn generate_memory(config: &Config) -> String {
             {name} : ORIGIN = {origin}, LENGTH = {length}"}
         })
         .collect::<Vec<_>>()
-        .join("\n    ")
-        + "\n"
+        .join("    ")
 }
 
-fn generate_dep_matches(section_name: &str, deps: &DepTree) -> String {
+fn generate_dep_matches(section_name: &str, deps: &DepTree, mangling: ManglingMatches) -> String {
     let res = deps
         .crates
         .values()
@@ -33,12 +64,19 @@ fn generate_dep_matches(section_name: &str, deps: &DepTree) -> String {
         })
         .map(|dep| {
             let dep_name = dep.name.replace("-", "_");
-            let dep_len = dep.name.len();
-            formatdoc! {"
-                        *(.text._ZN{dep_len}{dep_name}*)
-                                *(.rodata._ZN{dep_len}{dep_name}*)
-                                *(.data.rel.ro._ZN{dep_len}{dep_name}*)
+            let mangled = generate_mangling_matches(&dep_name, mangling);
+            mangled
+                .iter()
+                .map(|mangled| {
+                    formatdoc! {"
+                        *(.text.{mangled}*)
+                        *(.text.unlikely.{mangled}*)
+                                *(.rodata.{mangled}*)
+                                *(.data.rel.ro.{mangled}*)
                     "}
+                })
+                .collect::<Vec<String>>()
+                .join("        ")
         })
         .collect::<Vec<_>>();
     if res.is_empty() {
@@ -59,13 +97,13 @@ fn generate_symbol_matches(section_name: &str, config: &Config) -> Option<String
         .map(|(glob, symbol)| {
             let mut res = String::new();
             if symbol.symbol_types.text {
-                res += &format!("*(.text.{glob})");
+                res += &format!("        *(.text.{glob})\n");
             };
             if symbol.symbol_types.rodata {
-                res += &format!("*(.rodata.{glob})");
+                res += &format!("        *(.rodata.{glob})\n");
             };
             if symbol.symbol_types.datarel {
-                res += &format!("*(.data.rel.{glob})");
+                res += &format!("        *(.data.rel.{glob})\n");
             };
             res
         })
@@ -77,12 +115,12 @@ fn generate_symbol_matches(section_name: &str, config: &Config) -> Option<String
     }
 }
 
-fn generate_crate_sections(config: &Config, deps: &DepTree) -> String {
+fn generate_crate_sections(config: &Config, deps: &DepTree, mangling: ManglingMatches) -> String {
     let res = config
         .sections
         .keys()
         .map(|section_name| {
-            let dep_matches = generate_dep_matches(section_name, deps);
+            let dep_matches = generate_dep_matches(section_name, deps, mangling);
             let section_target = section_name_to_target(section_name);
             formatdoc! {"
                 .{section_name} : {{          
@@ -108,7 +146,7 @@ fn generate_user_sections(config: &Config) -> String {
             symbol_matches.map(|symbol_matches| {
                 formatdoc! {"
                 .{section_name} : {{          
-                        {symbol_matches}. = ALIGN(4);
+                {symbol_matches}. = ALIGN(4);
                     }} > {section_target}
             "}
             })
@@ -121,9 +159,9 @@ fn generate_user_sections(config: &Config) -> String {
     }
 }
 
-pub fn generate_script(config: &Config, deps: &DepTree) -> String {
+pub fn generate_script(config: &Config, deps: &DepTree, mangling: ManglingMatches) -> String {
     let memory = generate_memory(config);
-    let crate_sections = generate_crate_sections(config, deps);
+    let crate_sections = generate_crate_sections(config, deps, mangling);
     let user_sections = generate_user_sections(config);
     let ram_origin = &config.ram.origin;
     let ram_len = &config.ram.length;

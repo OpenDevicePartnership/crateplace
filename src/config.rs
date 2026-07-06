@@ -5,7 +5,7 @@ fn default_true() -> bool {
     true
 }
 
-fn parse_offset(value: &str) -> Result<u64, ConfigValidationError> {
+pub(crate) fn parse_offset(value: &str) -> Result<u64, ConfigValidationError> {
     if let Some(hex) = value
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
