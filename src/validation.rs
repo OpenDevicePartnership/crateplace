@@ -2,10 +2,14 @@ use core::fmt;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
+use regex::RegexSet;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
+use std::fs::File;
 use std::io;
+use std::io::Read;
+use std::io::Write;
 use std::iter::Peekable;
 use std::path::Path;
 use std::str::Chars;
@@ -107,6 +111,83 @@ impl ValidationProblem {
     }
 }
 
+static DEFUALT_IGNORELIST: &[&str] = &[
+    r"^\.Lanon",
+    r"^__aeabi",
+    r"^__defmt",
+    r"^_defmt",
+    r"^_critical_section",
+    r"^Reset$",
+    r"^__DEFMT_MARKER_TIMESTAMP_WAS_DEFINED$",
+    r"^_MergedGlobals$",
+    r"^__pre_init$",
+    r"^pre_init$",
+    r"defmt_timestamp",
+    r"default_panic",
+    r"default_timestamp",
+    r"DEFMT_ENCODING",
+    r"DEFMT_VERSION",
+    r"DEFMT_VERSION",
+];
+
+#[derive()]
+pub struct IgnoreList {
+    entries: regex::RegexSet,
+}
+
+impl IgnoreList {
+    pub fn new<I, S>(exprs: I) -> Result<Self, ValidationError>
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
+        Ok(Self {
+            entries: regex::RegexSet::new(exprs)?,
+        })
+    }
+
+    pub fn from_file(path: &Path) -> Result<Self, ValidationError> {
+        let mut file = File::open(path).file_error(path)?;
+        let mut content = String::new();
+        file.read_to_string(&mut content).file_error(path)?;
+        Ok(Self {
+            entries: regex::RegexSet::new(content.lines())?,
+        })
+    }
+
+    pub fn content(&self) -> &[String] {
+        self.entries.patterns()
+    }
+
+    pub fn to_file(&self, path: &Path) -> Result<(), std::io::Error> {
+        let mut file = File::open(path)?;
+        let res = self
+            .entries
+            .patterns()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<String>>()
+            .join("\n");
+        file.write_all(res.as_bytes())?;
+        Ok(())
+    }
+}
+
+impl From<RegexSet> for IgnoreList {
+    fn from(value: RegexSet) -> Self {
+        Self { entries: value }
+    }
+}
+
+impl Default for IgnoreList {
+    fn default() -> Self {
+        Self {
+            entries: RegexSet::new(DEFUALT_IGNORELIST)
+                .expect("Defualt ignorelist contains an error"),
+        }
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum ValidationError {
     #[error("File error: {path}")]
@@ -126,6 +207,12 @@ pub enum ValidationError {
         #[source]
         #[from]
         gimli::Error,
+    ),
+    #[error("Invalid regex in ignorelist")]
+    InvalidRegex(
+        #[source]
+        #[from]
+        regex::Error,
     ),
 }
 
@@ -256,17 +343,27 @@ fn extract_crate_name(symbol: &str) -> Result<String, ValidationProblem> {
 fn classify_rust_symbol(
     name: &str,
     linkage_name: &str,
-    namespace_root: Option<&str>,
+    alternative: Option<&str>,
 ) -> Result<SymbolClass, ValidationProblem> {
     if ignore(name) {
         return Ok(SymbolClass::Ignored);
+    }
+    if linkage_name == name {
+        return Ok(SymbolClass::RustNonMangled {
+            name: name.to_string(),
+            crate_name: alternative.map(ToString::to_string).ok_or_else(|| {
+                ValidationProblem::NoCrateName {
+                    name: name.to_string(),
+                }
+            })?,
+        });
     }
     if let Ok(rust_demangled) = rustc_demangle::try_demangle(linkage_name) {
         let demangled = rust_demangled.to_string();
         let crate_name = match extract_crate_name(linkage_name) {
             Ok(name) => name.to_string(),
             Err(err) => {
-                if let Some(namespace_root) = namespace_root {
+                if let Some(namespace_root) = alternative {
                     namespace_root.to_string()
                 } else {
                     return Err(err);
@@ -338,7 +435,15 @@ fn classify_symbols(
             .attr_value(gimli::DW_AT_language)
             .map(|lang| lang == gimli::AttributeValue::Language(gimli::DW_LANG_Rust))
             .unwrap_or_default();
-        let mut namespace_root: Option<&str> = None;
+        let compile_unit_root_name: Option<&str> =
+            root.attr_value(gimli::DW_AT_name).and_then(|name| {
+                dwarf.attr_string(&unit, name).ok().and_then(|attr| {
+                    attr.to_string()
+                        .ok()
+                        .and_then(|name| name.split(".").next())
+                })
+            });
+        let mut alternative_crate_name: Option<&str> = None;
         while let Some(entry) = entries.next_dfs()? {
             let tag = entry.tag();
             if unit_is_rust {
@@ -346,17 +451,17 @@ fn classify_symbols(
                     if tag == gimli::DW_TAG_namespace
                         && let Some(name) = entry.attr_value(gimli::DW_AT_name)
                     {
-                        namespace_root = dwarf
+                        alternative_crate_name = dwarf
                             .attr_string(&unit, name)
                             .ok()
                             .and_then(|attr| attr.to_string().ok());
                         continue;
                     } else {
-                        namespace_root = None;
+                        alternative_crate_name = compile_unit_root_name;
                     }
                 }
             } else {
-                namespace_root = None;
+                alternative_crate_name = compile_unit_root_name;
             }
 
             if !(tag == gimli::DW_TAG_subprogram || tag == gimli::DW_TAG_variable) {
@@ -374,14 +479,14 @@ fn classify_symbols(
             if let Some(name) = name {
                 if unit_is_rust {
                     if let Some(linkage_name) = linkage_name {
-                        match classify_rust_symbol(name, linkage_name, namespace_root) {
+                        match classify_rust_symbol(name, linkage_name, alternative_crate_name) {
                             Ok(class) => {
                                 res.insert(linkage_name.to_owned(), class);
                             }
                             Err(problem) => problems.push(problem),
                         }
                     } else {
-                        let crate_name = match namespace_root {
+                        let crate_name = match alternative_crate_name {
                             Some(name) => name,
                             None => {
                                 res.insert(name.to_string(), SymbolClass::RustCrateLess);
@@ -403,19 +508,6 @@ fn classify_symbols(
         }
     }
     Ok(res)
-}
-
-fn ignore(name: &str) -> bool {
-    name.starts_with(".Lanon")
-        || name.starts_with("__aeabi")
-        || name.starts_with("__defmt")
-        || name.starts_with("_defmt")
-        || name.starts_with("_critical_section")
-        || name == "Reset"
-        || name == "__DEFMT_MARKER_TIMESTAMP_WAS_DEFINED"
-        || name == "_MergedGlobals"
-        || name == "__pre_init"
-        || name == "pre_init"
 }
 
 fn late_classify(name: &str) -> Result<SymbolClass, ValidationProblem> {
@@ -585,8 +677,7 @@ fn validate_placement(
                 name: _,
                 crate_name,
             } => get_assignment_with_crate(&symbol.name, crate_name, assignments, config)?,
-            SymbolClass::NotMangled
-            | SymbolClass::RustCrateLess
+            SymbolClass::RustCrateLess
             | SymbolClass::OtherLang
             | SymbolClass::Main
             | SymbolClass::Defmt
