@@ -8,8 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io;
-use std::io::Read;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::iter::Peekable;
 use std::path::Path;
 use std::str::Chars;
@@ -93,7 +92,7 @@ pub enum ValidationProblem {
 
 impl ValidationProblem {
     pub fn problem_level(&self) -> ProblemLevel {
-        match self {
+        let problem_level = match self {
             ValidationProblem::SymbolTooBig { .. } => ProblemLevel::Error,
             ValidationProblem::SymbolPlacement { .. } => ProblemLevel::Error,
             ValidationProblem::SymbolAssignment { .. } => ProblemLevel::Error,
@@ -107,11 +106,12 @@ impl ValidationProblem {
             ValidationProblem::InvalidNumber { .. } => ProblemLevel::Error,
             ValidationProblem::SectionOverflow { .. } => ProblemLevel::Error,
             ValidationProblem::SymbolOverflow { .. } => ProblemLevel::Error,
-        }
+        };
+        problem_level
     }
 }
 
-static DEFUALT_IGNORELIST: &[&str] = &[
+static DEFAULT_IGNORELIST: &[&str] = &[
     r"^\.Lanon",
     r"^__aeabi",
     r"^__defmt",
@@ -127,10 +127,9 @@ static DEFUALT_IGNORELIST: &[&str] = &[
     r"default_timestamp",
     r"DEFMT_ENCODING",
     r"DEFMT_VERSION",
-    r"DEFMT_VERSION",
 ];
 
-#[derive()]
+#[derive(Debug, Clone)]
 pub struct IgnoreList {
     entries: regex::RegexSet,
 }
@@ -155,18 +154,22 @@ impl IgnoreList {
         })
     }
 
-    pub fn content(&self) -> &[String] {
+    pub fn patterns(&self) -> &[String] {
         self.entries.patterns()
     }
 
+    pub fn matches(&self, symbol: &str) -> bool {
+        self.entries.is_match(symbol)
+    }
+
     pub fn to_file(&self, path: &Path) -> Result<(), std::io::Error> {
-        let mut file = File::open(path)?;
+        let mut file = File::create(path)?;
         let res = self
             .entries
             .patterns()
             .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<String>>()
+            .map(String::as_str)
+            .collect::<Vec<&str>>()
             .join("\n");
         file.write_all(res.as_bytes())?;
         Ok(())
@@ -182,8 +185,8 @@ impl From<RegexSet> for IgnoreList {
 impl Default for IgnoreList {
     fn default() -> Self {
         Self {
-            entries: RegexSet::new(DEFUALT_IGNORELIST)
-                .expect("Defualt ignorelist contains an error"),
+            entries: RegexSet::new(DEFAULT_IGNORELIST)
+                .expect("Default ignorelist contains an error"),
         }
     }
 }
@@ -342,10 +345,11 @@ fn extract_crate_name(symbol: &str) -> Result<String, ValidationProblem> {
 
 fn classify_rust_symbol(
     name: &str,
+    ignorelist: &IgnoreList,
     linkage_name: &str,
     alternative: Option<&str>,
 ) -> Result<SymbolClass, ValidationProblem> {
-    if ignore(name) {
+    if ignorelist.matches(name) {
         return Ok(SymbolClass::Ignored);
     }
     if linkage_name == name {
@@ -405,6 +409,7 @@ fn classify_rust_symbol(
 
 fn classify_symbols(
     problems: &mut Vec<ValidationProblem>,
+    ignorelist: &IgnoreList,
     obj: &object::File,
 ) -> Result<HashMap<String, SymbolClass>, ValidationError> {
     let dwarf = gimli::DwarfSections::load(|section| {
@@ -479,7 +484,12 @@ fn classify_symbols(
             if let Some(name) = name {
                 if unit_is_rust {
                     if let Some(linkage_name) = linkage_name {
-                        match classify_rust_symbol(name, linkage_name, alternative_crate_name) {
+                        match classify_rust_symbol(
+                            name,
+                            ignorelist,
+                            linkage_name,
+                            alternative_crate_name,
+                        ) {
                             Ok(class) => {
                                 res.insert(linkage_name.to_owned(), class);
                             }
@@ -510,9 +520,9 @@ fn classify_symbols(
     Ok(res)
 }
 
-fn late_classify(name: &str) -> Result<SymbolClass, ValidationProblem> {
+fn late_classify(name: &str, ignorelist: &IgnoreList) -> Result<SymbolClass, ValidationProblem> {
     if name.starts_with("_R") || name.starts_with("_ZN") {
-        classify_rust_symbol("", name, None)
+        classify_rust_symbol("", &ignorelist, name, None)
     } else {
         Err(ValidationProblem::ClassificationFailure {
             name: name.to_string(),
@@ -523,10 +533,11 @@ fn late_classify(name: &str) -> Result<SymbolClass, ValidationProblem> {
 fn load_binary(
     problems: &mut Vec<ValidationProblem>,
     file: &Path,
+    ignorelist: &IgnoreList,
 ) -> Result<Vec<ValidationSymbol>, ValidationError> {
     let binary_data = fs::read(file).file_error(file)?;
     let obj = object::File::parse(&*binary_data)?;
-    let mut classifications = classify_symbols(problems, &obj)?;
+    let mut classifications = classify_symbols(problems, &ignorelist, &obj)?;
     Ok(obj
         .symbols()
         .filter_map(|symbol| {
@@ -538,7 +549,7 @@ fn load_binary(
             } else {
                 &name
             };
-            if symbol.size() == 0 || ignore(name) {
+            if symbol.size() == 0 || ignorelist.matches(name) {
                 return None;
             }
             let class = match classifications.remove(name) {
@@ -549,7 +560,7 @@ fn load_binary(
                     return None;
                 }
                 Some(class) => class,
-                None => match late_classify(name) {
+                None => match late_classify(name, ignorelist) {
                     Ok(class) => class,
                     Err(problem) => {
                         problems.push(problem);
@@ -755,9 +766,10 @@ pub(crate) fn validate(
     binary_file: &Path,
     assignments: &DepTree,
     config: &Config,
+    ignorelist: &IgnoreList,
 ) -> Result<Vec<ValidationProblem>, ValidationError> {
     let mut problems = Vec::new();
-    let binary = load_binary(&mut problems, binary_file)?;
+    let binary = load_binary(&mut problems, binary_file, ignorelist)?;
     for symbol in &binary {
         if let Err(problem) = validate_placement(symbol, assignments, config) {
             problems.push(problem);

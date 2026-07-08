@@ -10,14 +10,14 @@ use crate::{
     config::{Config, ConfigValidationError},
     deps::{DepTree, Inverted},
     mangling::{ManglingDetectionError, ManglingVersion, rustc_mangling_version},
-    validation::{ValidationError, ValidationProblem},
+    validation::{IgnoreList, ValidationError, ValidationProblem},
 };
 use cargo_metadata::Message;
 use deps::{DepsError, get_deps};
 use std::{
     env,
     error::Error,
-    fs::File,
+    fs::{self, File},
     io::{self, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -25,6 +25,8 @@ use std::{
 
 const DEFAULT_CONFIG_NAME: &str = "Memory.toml";
 const DEFAULT_OUTPUT_NAME: &str = "memory.x";
+const DEFAULT_IGNORELIST_NAME: &str = ".crateplace-ignore";
+const CARGO_MANIFEST: &str = "Cargo.toml";
 
 #[derive(thiserror::Error, Debug)]
 pub enum CratePlacerError {
@@ -54,9 +56,9 @@ pub enum CratePlacerError {
     ),
     #[error("Output path had no parent: {0}")]
     InvalidPath(String),
-    #[error("Failed to find Memory.toml")]
-    FailedToFindConfig,
-    #[error("Failed to determine output path")]
+    #[error("Failed to find {0}")]
+    FailedToFindConfig(String),
+    #[error("Failed to find Cargo.toml")]
     NoOutput,
     #[error("Failed to find crate: {0}")]
     DepNotFound(String),
@@ -121,12 +123,83 @@ fn divine_mangling() -> Result<ManglingVersion, CratePlacerError> {
     )?)
 }
 
+trait ConfigFile: Sized {
+    type Error;
+    fn from_file(path: &Path) -> Result<Self, Self::Error>;
+}
+
+#[derive(Clone, Debug)]
+struct FileConfig<Config> {
+    default_file_name: &'static str,
+    path: Option<PathBuf>,
+    config: Option<Config>,
+}
+
+impl<Config: ConfigFile> FileConfig<Config>
+where
+    CratePlacerError: From<<Config as ConfigFile>::Error>,
+{
+    pub fn new(default_file_name: &'static str) -> Self {
+        Self {
+            default_file_name,
+            path: None,
+            config: None,
+        }
+    }
+
+    pub fn set_config(&mut self, config: Config) {
+        self.config = Some(config);
+    }
+
+    pub fn set_path<Pl: Into<PathBuf>>(&mut self, path: Pl) {
+        self.path = Some(path.into());
+    }
+
+    fn get_path(&mut self, manifest_dir: Option<&Path>) -> Result<&Path, CratePlacerError> {
+        if self.path.is_none() {
+            match manifest_dir {
+                Some(manifest_dir) => {
+                    let mut config_file = manifest_dir.to_path_buf();
+                    config_file.push(self.default_file_name);
+                    self.path = Some(config_file);
+                }
+                None => {
+                    self.path = look_up(Path::new(self.default_file_name));
+                }
+            }
+        }
+        self.path
+            .as_deref()
+            .ok_or_else(|| CratePlacerError::FailedToFindConfig(self.default_file_name.to_string()))
+    }
+
+    fn exists(&mut self, manifest_dir: Option<&Path>) -> bool {
+        self.get_path(manifest_dir)
+            .map(|path| path.exists())
+            .unwrap_or_default()
+    }
+
+    fn get_config(
+        &mut self,
+        manifest_dir: Option<&Path>,
+    ) -> Result<Option<&Config>, CratePlacerError> {
+        if self.config.is_none() {
+            let path = self.get_path(manifest_dir)?;
+            let config = Config::from_file(path)?;
+            self.config = Some(config);
+        }
+        Ok(self.config.as_ref())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CratePlacer<'p> {
     manifest: Option<&'p Path>,
     config: Option<Config>,
     config_file: Option<&'p Path>,
     output: Option<&'p Path>,
+    ignorelist_file: Option<&'p Path>,
+    ignorelist: Option<IgnoreList>,
     stdout: bool,
 }
 
@@ -140,8 +213,7 @@ pub(crate) fn look_up(filename: &Path) -> Option<PathBuf> {
     let curdir = env::current_dir().ok()?;
     let mut dir = curdir.as_path();
     loop {
-        let dirlist = std::fs::read_dir(dir);
-
+        let dirlist = fs::read_dir(dir);
         if let Some(file) = dirlist
             .ok()?
             .filter_map(|entry| entry.ok())
@@ -161,6 +233,8 @@ impl<'p> CratePlacer<'p> {
             config: None,
             output: None,
             stdout: false,
+            ignorelist_file: None,
+            ignorelist: None,
         }
     }
 
@@ -188,32 +262,77 @@ impl<'p> CratePlacer<'p> {
         self
     }
 
+    pub fn ignorelist_file(&mut self, ignorelist_file: &'p Path) -> &mut Self {
+        self.ignorelist_file = Some(ignorelist_file);
+        self
+    }
+
+    pub fn ignorelist(&mut self, list: IgnoreList) -> &mut Self {
+        self.ignorelist = Some(list);
+        self
+    }
+
     pub fn get_deps(&self) -> Result<DepTree, CratePlacerError> {
         Ok(get_deps(self.manifest)?)
+    }
+
+    fn get_manifest_dir(&self) -> Option<PathBuf> {
+        if let Some(manifest_path) = &self.manifest {
+            Some(manifest_path.parent()?.to_path_buf())
+        } else {
+            Some(look_up(Path::new(CARGO_MANIFEST))?)
+        }
+    }
+
+    fn get_ignorelist_path(&self) -> Result<Option<PathBuf>, CratePlacerError> {
+        match self.ignorelist_file {
+            Some(path) => Ok(Some(path.to_owned())),
+            None => match self.get_manifest_dir() {
+                Some(manifest_dir) => {
+                    let mut ignorelist_file = manifest_dir;
+                    ignorelist_file.push(DEFAULT_IGNORELIST_NAME);
+                    if ignorelist_file.exists() {
+                        Ok(Some(ignorelist_file))
+                    } else {
+                        Ok(None)
+                    }
+                }
+                None => Ok(look_up(Path::new(DEFAULT_IGNORELIST_NAME))),
+            },
+        }
+    }
+
+    fn get_ignorelist(&mut self) -> Result<&IgnoreList, CratePlacerError> {
+        if self.ignorelist.is_none() {
+            let path = self.get_ignorelist_path()?;
+            if let Some(path) = path {
+                self.ignorelist = Some(IgnoreList::from_file(&path)?);
+            } else {
+                self.ignorelist = Some(IgnoreList::default());
+            }
+        }
+        Ok(self.ignorelist.as_ref().unwrap())
     }
 
     fn get_config_path(&self) -> Result<PathBuf, CratePlacerError> {
         match self.config_file {
             Some(path) => Ok(path.to_owned()),
-            None => {
-                if let Some(manifest) = self.manifest
-                    && let Some(manifest_dir) = manifest.parent()
-                {
-                    let mut config_file = manifest_dir.to_path_buf();
+            None => match self.get_manifest_dir() {
+                Some(manifest_dir) => {
+                    let mut config_file = manifest_dir;
                     config_file.push(DEFAULT_CONFIG_NAME);
                     Ok(config_file)
-                } else {
-                    Ok(look_up(Path::new(DEFAULT_CONFIG_NAME))
-                        .ok_or(CratePlacerError::FailedToFindConfig)?)
                 }
-            }
+                None => Ok(look_up(Path::new(DEFAULT_CONFIG_NAME))
+                    .ok_or(CratePlacerError::FailedToFindConfig)?),
+            },
         }
     }
 
     pub fn get_config(&mut self) -> Result<&Config, CratePlacerError> {
         if self.config.is_none() {
             let path = self.get_config_path()?;
-            let content = std::fs::read_to_string(&path).file_error(&path)?;
+            let content = fs::read_to_string(&path).file_error(&path)?;
             self.config.replace(toml::from_str(&content)?);
         }
         Ok(self.config.as_ref().unwrap())
@@ -340,7 +459,14 @@ impl<'p> CratePlacer<'p> {
         let config = self.get_config()?;
         config.validate()?;
         assign(config, &mut deps)?;
-        Ok(validation::validate(output_file, &deps, config)?)
+        let ignore_list = self.get_ignorelist()?;
+
+        Ok(validation::validate(
+            output_file,
+            &deps,
+            config,
+            &ignore_list,
+        )?)
     }
 
     pub fn build_then_validate(&mut self) -> Result<Vec<ValidationProblem>, CratePlacerError> {
