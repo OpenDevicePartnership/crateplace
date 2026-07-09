@@ -1,28 +1,27 @@
 use core::fmt;
-use object::Object;
-use object::ObjectSection;
-use object::ObjectSymbol;
+use object::{Object, ObjectSection, ObjectSymbol};
 use regex::RegexSet;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
-use std::io;
 use std::io::{Read, Write};
 use std::iter::Peekable;
 use std::path::Path;
 use std::str::Chars;
 
+use crate::FileConfigData;
 use crate::config;
-use crate::config::Config;
-use crate::config::Section;
+use crate::config::{Config, Section};
 use crate::deps::DepTree;
-use crate::mangling;
+use crate::file_error::{FileError, IOToFileError};
+use crate::mangling::ManglingVersion;
 
 #[derive(Debug, Clone)]
 pub enum ProblemLevel {
     Warning,
     Error,
+    Ignored,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -88,11 +87,13 @@ pub enum ValidationProblem {
         start: u64,
         length: u64,
     },
+    #[error("{0}")]
+    Ignored(String),
 }
 
 impl ValidationProblem {
     pub fn problem_level(&self) -> ProblemLevel {
-        let problem_level = match self {
+        match self {
             ValidationProblem::SymbolTooBig { .. } => ProblemLevel::Error,
             ValidationProblem::SymbolPlacement { .. } => ProblemLevel::Error,
             ValidationProblem::SymbolAssignment { .. } => ProblemLevel::Error,
@@ -106,32 +107,43 @@ impl ValidationProblem {
             ValidationProblem::InvalidNumber { .. } => ProblemLevel::Error,
             ValidationProblem::SectionOverflow { .. } => ProblemLevel::Error,
             ValidationProblem::SymbolOverflow { .. } => ProblemLevel::Error,
-        };
-        problem_level
+            ValidationProblem::Ignored(_) => ProblemLevel::Ignored,
+        }
     }
 }
 
 static DEFAULT_IGNORELIST: &[&str] = &[
-    r"^\.Lanon",
-    r"^__aeabi",
-    r"^__defmt",
-    r"^_defmt",
-    r"^_critical_section",
-    r"^Reset$",
-    r"^__DEFMT_MARKER_TIMESTAMP_WAS_DEFINED$",
-    r"^_MergedGlobals$",
-    r"^__pre_init$",
-    r"^pre_init$",
-    r"defmt_timestamp",
-    r"default_panic",
-    r"default_timestamp",
-    r"DEFMT_ENCODING",
-    r"DEFMT_VERSION",
+    "^\\{\"package\":.*,\"tag\":\"defmt.*,\"data\":",
+    "^\\.Lanon",
+    "^__aeabi",
+    "^__defmt",
+    "^_defmt",
+    "^_critical_section",
+    "^Reset$",
+    "^__DEFMT",
+    "^_MergedGlobals$",
+    "^__pre_init$",
+    "^pre_init$",
+    "^defmt_",
+    "^default_",
+    "^DEFMT_",
+    "^main$",
+    "^S$",
+    "^__ONCE__$",
+    "^__cortex_m_rt",
 ];
 
 #[derive(Debug, Clone)]
 pub struct IgnoreList {
     entries: regex::RegexSet,
+}
+
+impl FileConfigData for IgnoreList {
+    type Error = ValidationError;
+
+    fn from_file(path: &Path) -> Result<Self, Self::Error> {
+        Self::from_file(path)
+    }
 }
 
 impl IgnoreList {
@@ -146,9 +158,9 @@ impl IgnoreList {
     }
 
     pub fn from_file(path: &Path) -> Result<Self, ValidationError> {
-        let mut file = File::open(path).file_error(path)?;
+        let mut file = File::open(path).read_error(path)?;
         let mut content = String::new();
-        file.read_to_string(&mut content).file_error(path)?;
+        file.read_to_string(&mut content).read_error(path)?;
         Ok(Self {
             entries: regex::RegexSet::new(content.lines())?,
         })
@@ -193,12 +205,6 @@ impl Default for IgnoreList {
 
 #[derive(thiserror::Error, Debug)]
 pub enum ValidationError {
-    #[error("File error: {path}")]
-    FileError {
-        #[source]
-        err: std::io::Error,
-        path: String,
-    },
     #[error("Failed to parse object file")]
     ObjectError(
         #[source]
@@ -217,20 +223,15 @@ pub enum ValidationError {
         #[from]
         regex::Error,
     ),
+
+    #[error("File error")]
+    FileError(
+        #[source]
+        #[from]
+        FileError,
+    ),
 }
 
-trait IOToValidationError<T> {
-    fn file_error(self, path: &Path) -> Result<T, ValidationError>;
-}
-
-impl<T> IOToValidationError<T> for Result<T, io::Error> {
-    fn file_error(self, path: &Path) -> Result<T, ValidationError> {
-        self.map_err(|err| ValidationError::FileError {
-            err,
-            path: path.to_string_lossy().to_string(),
-        })
-    }
-}
 #[derive(Clone, Debug)]
 pub enum SymbolClass {
     RustMangled {
@@ -243,9 +244,6 @@ pub enum SymbolClass {
     },
     RustCrateLess,
     OtherLang,
-    Defmt,
-    Main,
-    CortexMShenanigans,
     Ignored,
 }
 
@@ -274,13 +272,8 @@ impl fmt::Display for ValidationSymbol {
             SymbolClass::RustNonMangled { name, crate_name } => {
                 write!(f, ": RustNonMangled{{\"{name}\", crate: \"{crate_name}\"}}")?;
             }
-            SymbolClass::Defmt => {
-                write!(f, ": Defmt")?;
-            }
-            SymbolClass::Main => write!(f, ": Main")?,
             SymbolClass::OtherLang => write!(f, ": OtherLanguage")?,
             SymbolClass::RustCrateLess => write!(f, ": RustCrateLess")?,
-            SymbolClass::CortexMShenanigans => write!(f, ": CortexMSpecial")?,
             SymbolClass::Ignored => write!(f, ": Ignored")?,
         }
         write!(
@@ -333,10 +326,10 @@ fn legacy_extract(symbol: &str) -> Option<String> {
 }
 
 fn extract_crate_name(symbol: &str) -> Result<String, ValidationProblem> {
-    mangling::ManglingVersion::from_mangling_string_prefix(symbol)
+    ManglingVersion::from_mangling_string_prefix(symbol)
         .and_then(|scheme| match scheme {
-            mangling::ManglingVersion::Legacy => legacy_extract(symbol),
-            mangling::ManglingVersion::V0 => v0_extract(symbol),
+            ManglingVersion::Legacy => legacy_extract(symbol),
+            ManglingVersion::V0 => v0_extract(symbol),
         })
         .ok_or(ValidationProblem::NoCrateName {
             name: symbol.to_string(),
@@ -378,28 +371,6 @@ fn classify_rust_symbol(
             demangled,
             crate_name: crate_name.to_string(),
         });
-    }
-    if ((name == "DEFMT_LOG_STATEMENT" || name == "S")
-        && linkage_name.contains("{\"package\":")
-        && linkage_name.contains("\"tag\":"))
-        || [
-            "defmt_timestamp",
-            "default_panic",
-            "default_timestamp",
-            "DEFMT_ENCODING",
-            "DEFMT_VERSION",
-            "DEFMT_VERSION",
-        ]
-        .contains(&name)
-            && linkage_name.contains("_defmt")
-    {
-        return Ok(SymbolClass::Defmt);
-    }
-    if linkage_name == "main" {
-        return Ok(SymbolClass::Main);
-    }
-    if name.starts_with("__cortex_m_rt") || name == "__ONCE__" {
-        return Ok(SymbolClass::CortexMShenanigans);
     }
     Err(ValidationProblem::UnknownManglingScheme {
         name: name.to_string(),
@@ -522,7 +493,7 @@ fn classify_symbols(
 
 fn late_classify(name: &str, ignorelist: &IgnoreList) -> Result<SymbolClass, ValidationProblem> {
     if name.starts_with("_R") || name.starts_with("_ZN") {
-        classify_rust_symbol("", &ignorelist, name, None)
+        classify_rust_symbol("", ignorelist, name, None)
     } else {
         Err(ValidationProblem::ClassificationFailure {
             name: name.to_string(),
@@ -535,9 +506,9 @@ fn load_binary(
     file: &Path,
     ignorelist: &IgnoreList,
 ) -> Result<Vec<ValidationSymbol>, ValidationError> {
-    let binary_data = fs::read(file).file_error(file)?;
+    let binary_data = fs::read(file).read_error(file)?;
     let obj = object::File::parse(&*binary_data)?;
-    let mut classifications = classify_symbols(problems, &ignorelist, &obj)?;
+    let mut classifications = classify_symbols(problems, ignorelist, &obj)?;
     Ok(obj
         .symbols()
         .filter_map(|symbol| {
@@ -550,6 +521,7 @@ fn load_binary(
                 &name
             };
             if symbol.size() == 0 || ignorelist.matches(name) {
+                problems.push(ValidationProblem::Ignored(name.to_string()));
                 return None;
             }
             let class = match classifications.remove(name) {
@@ -688,12 +660,12 @@ fn validate_placement(
                 name: _,
                 crate_name,
             } => get_assignment_with_crate(&symbol.name, crate_name, assignments, config)?,
-            SymbolClass::RustCrateLess
-            | SymbolClass::OtherLang
-            | SymbolClass::Main
-            | SymbolClass::Defmt
-            | SymbolClass::Ignored
-            | SymbolClass::CortexMShenanigans => return Ok(()),
+            SymbolClass::Ignored => {
+                return Err(ValidationProblem::Ignored(symbol.name.to_string()));
+            }
+            SymbolClass::OtherLang | SymbolClass::RustCrateLess => {
+                return Ok(());
+            }
         },
     };
     let assignment = match assignment {

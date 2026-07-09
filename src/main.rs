@@ -113,7 +113,17 @@ enum Command {
     /// Validate the output using debug info
     Validate {
         /// Path to binary file
-        binary: Option<PathBuf>,
+        #[arg(short, long)]
+        file: Option<PathBuf>,
+        /// Ignore file containing symbol regex
+        #[arg(short, long)]
+        ignore_file: Option<PathBuf>,
+        /// Add misplaced symbols to the ignore file
+        #[arg(short, long)]
+        bless: bool,
+        /// Show ignored symbols
+        #[arg(short, long)]
+        show_ignored: bool,
     },
 }
 
@@ -176,11 +186,23 @@ fn perform_command(
             let version = rustc_mangling_version(rustc.as_deref(), rustflags)?;
             println!("{version}");
         }
-        Command::Validate { binary } => {
-            let problems = match binary {
+        Command::Validate {
+            file,
+            ignore_file,
+            bless,
+            show_ignored,
+        } => {
+            if let Some(ignore_file) = ignore_file {
+                placer.ignorelist_file(ignore_file);
+            }
+            let problems = match file {
                 Some(binary) => placer.validate(&binary),
                 None => placer.build_then_validate(),
             }?;
+            if bless {
+                placer.bless(&problems)?;
+            }
+            let mut problem_count = 0;
             for problem in &problems {
                 let error = Style::new()
                     .fg_color(Some(Color::Ansi(AnsiColor::Red)))
@@ -188,19 +210,30 @@ fn perform_command(
                 let warning = Style::new()
                     .fg_color(Some(Color::Ansi(AnsiColor::Yellow)))
                     .bold();
+                let ignored = Style::new()
+                    .fg_color(Some(Color::Ansi(AnsiColor::Blue)))
+                    .bold();
 
                 let prep = match problem.problem_level() {
                     ProblemLevel::Error => {
+                        problem_count += 1;
                         format!("{error}Error:{error:#}")
                     }
                     ProblemLevel::Warning => {
+                        problem_count += 1;
                         format!("{warning}Warning:{warning:#}")
+                    }
+                    ProblemLevel::Ignored => {
+                        if !show_ignored {
+                            continue;
+                        }
+                        format!("{ignored}Ignored:{ignored:#}")
                     }
                 };
 
                 println!("{prep} {problem}");
             }
-            if !problems.is_empty() {
+            if problem_count != 0 {
                 std::process::exit(2);
             }
         }
