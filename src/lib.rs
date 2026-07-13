@@ -14,6 +14,8 @@ use crate::{
     mangling::{ManglingDetectionError, ManglingVersion, rustc_mangling_version},
     validation::{IgnoreList, ValidationError, ValidationProblem},
 };
+
+use anstream::println;
 use cargo_metadata::Message;
 use deps::{DepsError, get_deps};
 use std::{

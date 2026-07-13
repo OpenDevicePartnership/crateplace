@@ -1,3 +1,4 @@
+use anstream::println;
 use clap::builder::styling::{AnsiColor, Color, Style};
 use clap::{Parser, Subcommand};
 use crateplace::validation::{ProblemLevel, ValidationProblem};
