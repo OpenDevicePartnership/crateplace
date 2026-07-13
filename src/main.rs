@@ -49,6 +49,7 @@ enum CommandlineError {
 enum ManglingVersion {
     Legacy,
     V0,
+    All,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -62,16 +63,18 @@ impl FromStr for ManglingVersion {
         match s {
             "legacy" => Ok(Self::Legacy),
             "v0" => Ok(Self::V0),
+            "all" => Ok(Self::All),
             _ => Err(ManglingParseError),
         }
     }
 }
 
-impl From<ManglingVersion> for crateplace::mangling::ManglingVersion {
+impl From<ManglingVersion> for crateplace::ManglingMatches {
     fn from(value: ManglingVersion) -> Self {
         match value {
-            ManglingVersion::Legacy => crateplace::mangling::ManglingVersion::Legacy,
-            ManglingVersion::V0 => crateplace::mangling::ManglingVersion::V0,
+            ManglingVersion::Legacy => crateplace::ManglingMatches::Legacy,
+            ManglingVersion::V0 => crateplace::ManglingMatches::V0,
+            ManglingVersion::All => crateplace::ManglingMatches::All,
         }
     }
 }
