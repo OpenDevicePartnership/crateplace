@@ -1,6 +1,6 @@
 use clap::builder::styling::{AnsiColor, Color, Style};
 use clap::{Parser, Subcommand};
-use crateplace::validation::ProblemLevel;
+use crateplace::validation::{ProblemLevel, ValidationProblem};
 use crateplace::{
     CratePlacer, CratePlacerError,
     deps::Inverted,
@@ -216,17 +216,23 @@ fn perform_command(
             if bless {
                 placer.bless(&problems)?;
             }
+            let error = Style::new()
+                .fg_color(Some(Color::Ansi(AnsiColor::Red)))
+                .bold();
+            let warning = Style::new()
+                .fg_color(Some(Color::Ansi(AnsiColor::Yellow)))
+                .bold();
+            let ignored = Style::new()
+                .fg_color(Some(Color::Ansi(AnsiColor::Blue)))
+                .bold();
             let mut problem_count = 0;
+            let mut custom_symbol_error = false;
             for problem in &problems {
-                let error = Style::new()
-                    .fg_color(Some(Color::Ansi(AnsiColor::Red)))
-                    .bold();
-                let warning = Style::new()
-                    .fg_color(Some(Color::Ansi(AnsiColor::Yellow)))
-                    .bold();
-                let ignored = Style::new()
-                    .fg_color(Some(Color::Ansi(AnsiColor::Blue)))
-                    .bold();
+                if let ValidationProblem::SymbolAssignment { owner, .. } = problem
+                    && owner.contains("custom")
+                {
+                    custom_symbol_error = true;
+                }
 
                 let prep = match problem.problem_level() {
                     ProblemLevel::Error => {
@@ -246,6 +252,11 @@ fn perform_command(
                 };
 
                 println!("{prep} {problem}");
+            }
+            if custom_symbol_error {
+                println!(
+                    "{warning}NOTE:{warning:#} custom symbol assignments on non-Rust symbols need to be compiled with \"-ffunction-sections -fdata-sections\" or crateplace will not be able to control their placement."
+                );
             }
             if problem_count != 0 {
                 std::process::exit(2);
