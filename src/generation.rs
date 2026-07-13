@@ -70,7 +70,7 @@ fn generate_dep_matches(section_name: &str, deps: &DepTree, mangling: ManglingMa
                 .map(|mangled| {
                     formatdoc! {"
                         *(.text.{mangled}*)
-                        *(.text.unlikely.{mangled}*)
+                                *(.text.unlikely.{mangled}*)
                                 *(.rodata.{mangled}*)
                                 *(.data.rel.ro.{mangled}*)
                     "}
@@ -111,7 +111,7 @@ fn generate_symbol_matches(section_name: &str, config: &Config) -> Option<String
     if text.is_empty() {
         None
     } else {
-        Some(text.join("        ") + "        ")
+        Some(text.join("") + "        ")
     }
 }
 

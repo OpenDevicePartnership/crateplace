@@ -452,8 +452,8 @@ fn classify_symbols(
                 .attr_value(gimli::DW_AT_linkage_name)
                 .and_then(|attr| dwarf.attr_string(&unit, attr).ok()?.to_string().ok());
 
-            if let Some(name) = name {
-                if unit_is_rust {
+            if unit_is_rust {
+                if let Some(name) = name {
                     if let Some(linkage_name) = linkage_name {
                         match classify_rust_symbol(
                             name,
@@ -482,7 +482,9 @@ fn classify_symbols(
                             },
                         );
                     }
-                } else {
+                }
+            } else {
+                if let Some(name) = linkage_name.or(name) {
                     res.insert(name.to_string(), SymbolClass::OtherLang);
                 }
             }
@@ -660,10 +662,10 @@ fn validate_placement(
                 name: _,
                 crate_name,
             } => get_assignment_with_crate(&symbol.name, crate_name, assignments, config)?,
-            SymbolClass::Ignored => {
+            SymbolClass::Ignored | SymbolClass::RustCrateLess => {
                 return Err(ValidationProblem::Ignored(symbol.name.to_string()));
             }
-            SymbolClass::OtherLang | SymbolClass::RustCrateLess => {
+            SymbolClass::OtherLang => {
                 return Ok(());
             }
         },
