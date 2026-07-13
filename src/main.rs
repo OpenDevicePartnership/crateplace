@@ -101,6 +101,12 @@ enum Command {
         /// Mangling version to use for script generation
         #[arg(short, long)]
         rustc_mangling_version: Option<ManglingVersion>,
+        /// Include extra linkerscript before the crateplace script
+        #[arg(short, long)]
+        before_script: Option<String>,
+        /// Include extra linkerscript after the crateplace script
+        #[arg(short, long)]
+        after_script: Option<String>,
     },
     /// Setup default build.rs and Memory.toml files
     Init,
@@ -168,9 +174,17 @@ fn perform_command(
             output,
             stdout,
             rustc_mangling_version,
+            before_script,
+            after_script,
         } => {
             if let Some(output) = &output {
                 placer.output(output.as_path());
+            }
+            if let Some(pre_script) = &before_script {
+                placer.pre_script(pre_script);
+            }
+            if let Some(post_script) = &after_script {
+                placer.post_script(post_script);
             }
             placer.stdout(stdout);
             placer.write_linkerscript(rustc_mangling_version.map(Into::into))?

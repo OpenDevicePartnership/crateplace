@@ -198,6 +198,8 @@ pub struct CratePlacer {
     config: FileConfig<Config>,
     output: Option<PathBuf>,
     ignorelist: FileConfig<IgnoreList>,
+    pre_script: Option<String>,
+    post_script: Option<String>,
     stdout: bool,
 }
 
@@ -242,6 +244,8 @@ impl CratePlacer {
             output: None,
             stdout: false,
             ignorelist: FileConfig::new(DEFAULT_IGNORELIST_NAME),
+            pre_script: None,
+            post_script: None,
         }
     }
 
@@ -276,6 +280,16 @@ impl CratePlacer {
 
     pub fn ignorelist(&mut self, list: IgnoreList) -> &mut Self {
         self.ignorelist.set(list);
+        self
+    }
+
+    pub fn pre_script(&mut self, script: &str) -> &mut Self {
+        self.pre_script = Some(script.to_string());
+        self
+    }
+
+    pub fn post_script(&mut self, script: &str) -> &mut Self {
+        self.post_script = Some(script.to_string());
         self
     }
 
@@ -361,7 +375,13 @@ impl CratePlacer {
             ManglingVersion::Legacy => generation::ManglingMatches::All,
             ManglingVersion::V0 => generation::ManglingMatches::V0,
         };
-        Ok(generation::generate_script(config, &deps, mangling))
+        Ok(generation::generate_script(
+            config,
+            &deps,
+            mangling,
+            self.pre_script.as_deref(),
+            self.post_script.as_deref(),
+        ))
     }
 
     pub fn write_linkerscript(
