@@ -25,6 +25,8 @@ use std::{
     process::{Command, Stdio},
 };
 
+pub use generation::ManglingMatches;
+
 const DEFAULT_CONFIG_NAME: &str = "Memory.toml";
 const DEFAULT_OUTPUT_NAME: &str = "memory.x";
 const DEFAULT_IGNORELIST_NAME: &str = ".crateplace-ignore";
@@ -363,17 +365,16 @@ impl CratePlacer {
 
     pub fn get_linkerscript(
         &mut self,
-        mangling: Option<ManglingVersion>,
+        mangling: Option<ManglingMatches>,
     ) -> Result<String, CratePlacerError> {
         let deps = self.get_assigned_deps()?;
         let config = self.config.get(get_manifest_dir(&mut self.manifest))?;
         let mangling = match mangling {
             Some(mangling) => mangling,
-            None => divine_mangling()?,
-        };
-        let mangling = match mangling {
-            ManglingVersion::Legacy => generation::ManglingMatches::All,
-            ManglingVersion::V0 => generation::ManglingMatches::V0,
+            None => match divine_mangling()? {
+                ManglingVersion::Legacy => generation::ManglingMatches::All,
+                ManglingVersion::V0 => generation::ManglingMatches::V0,
+            },
         };
         Ok(generation::generate_script(
             config,
@@ -386,7 +387,7 @@ impl CratePlacer {
 
     pub fn write_linkerscript(
         &mut self,
-        mangling: Option<ManglingVersion>,
+        mangling: Option<ManglingMatches>,
     ) -> Result<(), CratePlacerError> {
         let linkerscript = self.get_linkerscript(mangling)?;
         if self.stdout {
