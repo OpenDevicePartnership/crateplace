@@ -1,6 +1,7 @@
 use anstream::println;
 use clap::builder::styling::{AnsiColor, Color, Style};
 use clap::{Parser, Subcommand};
+use crateplace::config::ByteUnit;
 use crateplace::validation::{ProblemLevel, ValidationProblem};
 use crateplace::{
     CratePlacer, CratePlacerError,
@@ -81,6 +82,23 @@ impl From<ManglingVersion> for crateplace::ManglingMatches {
 }
 
 #[derive(Subcommand, Debug, Clone)]
+enum Add {
+    /// Add a section to the config file
+    Section {
+        #[arg(short, long)]
+        name: String,
+        #[arg(short, long)]
+        origin: ByteUnit,
+        #[arg(short, long)]
+        length: ByteUnit,
+        #[arg(short, long)]
+        priority: u32,
+        #[arg(short, long)]
+        default: bool,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
 enum Command {
     /// Display the dependency tree with section assignments
     Tree {
@@ -135,6 +153,9 @@ enum Command {
         #[arg(short, long)]
         show_ignored: bool,
     },
+    /// Add to the config file
+    #[command(subcommand)]
+    Add(Add),
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -266,6 +287,17 @@ fn perform_command(
                 std::process::exit(2);
             }
         }
+        Command::Add(add) => match add {
+            Add::Section {
+                name,
+                origin,
+                length,
+                priority,
+                default,
+            } => {
+                placer.add_section(&name, origin, length, priority, default)?;
+            }
+        },
     }
     Ok(())
 }

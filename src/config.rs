@@ -2,7 +2,9 @@ use serde::Serialize;
 use serde::de::Error as DeSerializationError;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::Path;
 use std::str::FromStr;
+use toml_edit::{DocumentMut, Formatted, InlineTable, Item, TomlError, Value};
 
 use crate::FileConfigData;
 use crate::file_error::{FileError, IOToFileResult};
@@ -158,7 +160,7 @@ pub enum ConfigLoadError {
 impl FileConfigData for Config {
     type Error = ConfigLoadError;
 
-    fn from_file(path: &std::path::Path) -> Result<Self, Self::Error> {
+    fn from_file(path: &Path) -> Result<Self, Self::Error> {
         Ok(toml::from_str(
             &fs::read_to_string(path).file_in_result(path)?,
         )?)
@@ -306,4 +308,74 @@ impl Config {
         }
         Ok(())
     }
+
+    pub fn add_section(
+        &mut self,
+        config_path: &Path,
+        name: &str,
+        origin: ByteUnit,
+        length: ByteUnit,
+        priority: u32,
+        default: bool,
+    ) -> Result<(), ConfigModificationError> {
+        let new_section = Section {
+            origin,
+            length,
+            priority,
+            default,
+        };
+        if self.sections.contains_key(name) {
+            return Err(ConfigModificationError::SectionNameExists(name.to_string()));
+        }
+        self.sections.insert(name.to_string(), new_section);
+        self.validate()?;
+        let mut toml: DocumentMut = fs::read_to_string(config_path)
+            .file_in_result(config_path)?
+            .parse()?;
+        if let Item::Table(table) = toml
+            .get_mut("sections")
+            .ok_or(ConfigModificationError::FailedToFind("sections"))?
+        {
+            let mut entry = InlineTable::new();
+            entry.insert("origin", Value::String(Formatted::new(origin.to_string())));
+            entry.insert("length", Value::String(Formatted::new(length.to_string())));
+            entry.insert("priority", Value::Integer(Formatted::new(priority.into())));
+            if default {
+                entry.insert("default", Value::Boolean(Formatted::new(true)));
+            }
+            table.insert(name, Item::Value(Value::InlineTable(entry)));
+        } else {
+            return Err(ConfigModificationError::UnexpectedType("sections"));
+        }
+        fs::write(config_path, toml.to_string().into_bytes()).file_out_result(config_path)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigModificationError {
+    #[error("Section name already exists: {0}")]
+    SectionNameExists(String),
+    #[error("Validation")]
+    Validation(
+        #[source]
+        #[from]
+        ConfigValidationError,
+    ),
+    #[error("File error: {0}")]
+    FileError(
+        #[source]
+        #[from]
+        FileError,
+    ),
+    #[error("Toml error: {0}")]
+    TomlError(
+        #[source]
+        #[from]
+        TomlError,
+    ),
+    #[error("Failed to find: {0}")]
+    FailedToFind(&'static str),
+    #[error("Unexpected type: {0}")]
+    UnexpectedType(&'static str),
 }

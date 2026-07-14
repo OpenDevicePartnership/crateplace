@@ -8,7 +8,7 @@ pub mod mangling;
 pub mod validation;
 use crate::{
     assignment::{AssignmentError, assign},
-    config::{Config, ConfigLoadError, ConfigValidationError},
+    config::{ByteUnit, Config, ConfigLoadError, ConfigModificationError, ConfigValidationError},
     deps::{DepTree, Inverted},
     file_error::{FileError, IOToFileResult},
     mangling::{ManglingDetectionError, ManglingVersion, rustc_mangling_version},
@@ -103,6 +103,12 @@ pub enum CratePlacerError {
         #[from]
         FileError,
     ),
+    #[error("Config edit error")]
+    ConfigModificationError(
+        #[source]
+        #[from]
+        ConfigModificationError,
+    ),
 }
 
 pub fn report(mut err: &dyn Error) {
@@ -192,6 +198,17 @@ where
         }
         self.config
             .as_ref()
+            .ok_or_else(|| CratePlacerError::FailedToFindConfig(self.default_file_name.to_string()))
+    }
+
+    fn get_mut(&mut self, manifest_dir: Option<&Path>) -> Result<&mut Config, CratePlacerError> {
+        if self.config.is_none() {
+            let path = self.get_path(manifest_dir)?;
+            let config = Config::from_file(path)?;
+            self.config = Some(config);
+        }
+        self.config
+            .as_mut()
             .ok_or_else(|| CratePlacerError::FailedToFindConfig(self.default_file_name.to_string()))
     }
 }
@@ -512,5 +529,19 @@ impl CratePlacer {
             Err(_) => return Err(CratePlacerError::BuildError),
         };
         self.validate(Path::new(&output.ok_or(CratePlacerError::NoOutputBinary)?))
+    }
+
+    pub fn add_section(
+        &mut self,
+        name: &str,
+        origin: ByteUnit,
+        length: ByteUnit,
+        priority: u32,
+        default: bool,
+    ) -> Result<(), CratePlacerError> {
+        let manifest_dir = get_manifest_dir(&mut self.manifest);
+        let config_path = self.config.get_path(manifest_dir)?.to_path_buf();
+        let config = self.config.get_mut(manifest_dir)?;
+        Ok(config.add_section(&config_path, name, origin, length, priority, default)?)
     }
 }

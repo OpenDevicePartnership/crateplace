@@ -25,3 +25,4 @@ rustc-demangle = "0.1.27"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
 toml = "1.1.2"
+toml_edit = "0.25.13"
