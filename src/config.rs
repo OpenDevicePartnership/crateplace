@@ -1,3 +1,5 @@
+use serde::Serialize;
+use serde::de::Error as DeSerializationError;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::str::FromStr;
@@ -9,24 +11,84 @@ fn default_true() -> bool {
     true
 }
 
-pub(crate) fn parse_offset(value: &str) -> Result<u64, ConfigValidationError> {
-    if let Some(hex) = value
-        .strip_prefix("0x")
-        .or_else(|| value.strip_prefix("0X"))
-    {
-        return u64::from_str_radix(hex, 16)
-            .map_err(|_| ConfigValidationError::ParseError(value.to_owned()));
+#[derive(Debug, Clone, Copy)]
+pub enum ByteUnit {
+    H(u64),
+    B(u64),
+    K(u64),
+    M(u64),
+    G(u64),
+}
+
+#[derive(thiserror::Error, Debug, Clone)]
+#[error("Failed to parse byte unit: {0}")]
+pub struct UnitParseError(String);
+
+impl FromStr for ByteUnit {
+    type Err = UnitParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+            return Ok(ByteUnit::H(
+                u64::from_str_radix(hex, 16).map_err(|_| UnitParseError(s.to_owned()))?,
+            ));
+        }
+        Ok(match s.chars().last() {
+            Some('K') => ByteUnit::K(
+                u64::from_str(&s[..s.len() - 1]).map_err(|_| UnitParseError(s.to_string()))?,
+            ),
+            Some('M') => ByteUnit::M(
+                u64::from_str(&s[..s.len() - 1]).map_err(|_| UnitParseError(s.to_string()))?,
+            ),
+            Some('G') => ByteUnit::G(
+                u64::from_str(&s[..s.len() - 1]).map_err(|_| UnitParseError(s.to_string()))?,
+            ),
+            _ => ByteUnit::B(u64::from_str(s).map_err(|_| UnitParseError(s.to_string()))?),
+        })
     }
-    let (digits, mult) = match value.chars().last() {
-        Some('K') => (&value[..value.len() - 1], 1024),
-        Some('M') => (&value[..value.len() - 1], 1024 * 1024),
-        Some('G') => (&value[..value.len() - 1], 1024 * 1024 * 1024),
-        _ => (value, 1),
-    };
-    Ok(
-        u64::from_str(digits).map_err(|_| ConfigValidationError::ParseError(value.to_owned()))?
-            * mult,
-    )
+}
+
+impl ByteUnit {
+    pub fn as_bytes(&self) -> u64 {
+        match self {
+            ByteUnit::H(value) => *value,
+            ByteUnit::B(value) => *value,
+            ByteUnit::K(value) => value * 1024,
+            ByteUnit::M(value) => value * 1024 * 1024,
+            ByteUnit::G(value) => value * 1024 * 1024 * 1024,
+        }
+    }
+}
+
+impl std::fmt::Display for ByteUnit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ByteUnit::H(value) => write!(f, "{value:02X}"),
+            ByteUnit::B(value) => write!(f, "{value}"),
+            ByteUnit::K(value) => write!(f, "{value}K"),
+            ByteUnit::M(value) => write!(f, "{value}M"),
+            ByteUnit::G(value) => write!(f, "{value}G"),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ByteUnit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s: &str = serde::Deserialize::deserialize(deserializer)?;
+        Self::from_str(s).map_err(D::Error::custom)
+    }
+}
+
+impl Serialize for ByteUnit {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -55,8 +117,8 @@ pub struct SymPlacement {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Section {
-    pub origin: String,
-    pub length: String,
+    pub origin: ByteUnit,
+    pub length: ByteUnit,
     #[serde(default)]
     pub priority: u32,
     #[serde(default)]
@@ -65,8 +127,8 @@ pub struct Section {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Ram {
-    pub(crate) origin: String,
-    pub(crate) length: String,
+    pub(crate) origin: ByteUnit,
+    pub(crate) length: ByteUnit,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -106,8 +168,12 @@ pub enum ConfigValidationError {
     #[error("Section \"{1}\" overlaps with \"{0}\"")]
     Overlap(String, String),
     #[error("Failed to parse \"{0}\" as a memory offset")]
-    ParseError(String),
-    #[error("Section has a size of zero: \"{0}\"")]
+    ParseError(
+        #[source]
+        #[from]
+        UnitParseError,
+    ),
+    #[error("Parse error")]
     ZeroSection(String),
     #[error("Section overflowed when calculating end position: \"{0}\"")]
     OverFlow(String),
@@ -216,8 +282,8 @@ impl Config {
         let mut checker = ConfigChecker::new();
         checker.check(
             "ram".to_string(),
-            parse_offset(&self.ram.origin)?,
-            parse_offset(&self.ram.length)?,
+            self.ram.origin.as_bytes(),
+            self.ram.length.as_bytes(),
             None,
         )?;
         let mut default_found = false;
@@ -231,8 +297,8 @@ impl Config {
             }
             checker.check(
                 name.to_string(),
-                parse_offset(&section.origin)?,
-                parse_offset(&section.length)?,
+                section.origin.as_bytes(),
+                section.length.as_bytes(),
                 Some(section.priority),
             )?;
         }

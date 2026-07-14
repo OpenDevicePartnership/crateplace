@@ -11,7 +11,6 @@ use std::path::Path;
 use std::str::Chars;
 
 use crate::FileConfigData;
-use crate::config;
 use crate::config::{Config, Section};
 use crate::deps::DepTree;
 use crate::file_error::{FileError, IOToFileError};
@@ -73,8 +72,6 @@ pub enum ValidationProblem {
         #[source]
         error: glob::PatternError,
     },
-    #[error("Invalid number in config: \"{number}\"")]
-    InvalidNumber { number: String },
     #[error("Overflow computing section end: {section} start: {start:02x} length: {length:02x}")]
     SectionOverflow {
         section: String,
@@ -104,7 +101,6 @@ impl ValidationProblem {
             ValidationProblem::NonExistentSection { .. } => ProblemLevel::Error,
             ValidationProblem::NonExistentSectionCrate { .. } => ProblemLevel::Error,
             ValidationProblem::InvalidGlobPattern { .. } => ProblemLevel::Error,
-            ValidationProblem::InvalidNumber { .. } => ProblemLevel::Error,
             ValidationProblem::SectionOverflow { .. } => ProblemLevel::Error,
             ValidationProblem::SymbolOverflow { .. } => ProblemLevel::Error,
             ValidationProblem::Ignored(_) => ProblemLevel::Ignored,
@@ -686,17 +682,8 @@ fn validate_placement(
         });
     }
 
-    let assigned_origin = config::parse_offset(&assignment.section.origin).map_err(|_| {
-        ValidationProblem::InvalidNumber {
-            number: assignment.section.origin.to_string(),
-        }
-    })?;
-
-    let assigned_length = config::parse_offset(&assignment.section.length).map_err(|_| {
-        ValidationProblem::InvalidNumber {
-            number: assignment.section.origin.to_string(),
-        }
-    })?;
+    let assigned_origin = assignment.section.origin.as_bytes();
+    let assigned_length = assignment.section.length.as_bytes();
 
     let assigned_end = assigned_origin
         .checked_add(assigned_length)
