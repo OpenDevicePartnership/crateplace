@@ -10,7 +10,7 @@ use crate::{
     assignment::{AssignmentError, assign},
     config::{Config, ConfigLoadError, ConfigValidationError},
     deps::{DepTree, Inverted},
-    file_error::{FileError, IOToFileError},
+    file_error::{FileError, IOToFileResult},
     mangling::{ManglingDetectionError, ManglingVersion, rustc_mangling_version},
     validation::{IgnoreList, ValidationError, ValidationProblem},
 };
@@ -396,10 +396,10 @@ impl CratePlacer {
             println!("{}", linkerscript);
         } else {
             let output_file = self.get_output_file()?;
-            let mut output = File::create(output_file).write_error(output_file)?;
+            let mut output = File::create(output_file).file_out_result(output_file)?;
             output
                 .write_all(linkerscript.as_bytes())
-                .write_error(output_file)?;
+                .file_out_result(output_file)?;
         }
         Ok(())
     }
@@ -454,7 +454,7 @@ impl CratePlacer {
         let new_list = IgnoreList::new(&patterns)?;
         new_list
             .to_file(&ignore_list_path)
-            .write_error(&ignore_list_path)?;
+            .file_out_result(&ignore_list_path)?;
         self.ignorelist.set(new_list);
         Ok(())
     }
