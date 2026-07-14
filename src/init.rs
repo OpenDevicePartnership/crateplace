@@ -61,8 +61,7 @@ pub fn init(manifest: Option<&Path>) -> Result<(), InitError> {
         .write_all(DEFAULT_MEMORY_TOML.as_bytes())
         .write_error(&memory_toml)?;
 
-    let mut ignorelist = project_path.to_path_buf();
-    ignorelist.push(DEFAULT_IGNORELIST_NAME);
+    let mut ignorelist = project_path.join(DEFAULT_IGNORELIST_NAME);
     crate::validation::IgnoreList::default()
         .to_file(&ignorelist)
         .write_error(&ignorelist)?;
