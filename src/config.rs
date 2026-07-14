@@ -3,7 +3,7 @@ use std::fs;
 use std::str::FromStr;
 
 use crate::FileConfigData;
-use crate::file_error::{FileError, IOToFileError};
+use crate::file_error::{FileError, IOToFileResult};
 
 fn default_true() -> bool {
     true
@@ -97,7 +97,9 @@ impl FileConfigData for Config {
     type Error = ConfigLoadError;
 
     fn from_file(path: &std::path::Path) -> Result<Self, Self::Error> {
-        Ok(toml::from_str(&fs::read_to_string(path).read_error(path)?)?)
+        Ok(toml::from_str(
+            &fs::read_to_string(path).file_in_result(path)?,
+        )?)
     }
 }
 

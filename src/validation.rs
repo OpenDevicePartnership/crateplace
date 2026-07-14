@@ -14,7 +14,7 @@ use crate::FileConfigData;
 use crate::config;
 use crate::config::{Config, Section};
 use crate::deps::DepTree;
-use crate::file_error::{FileError, IOToFileError};
+use crate::file_error::{FileError, IOToFileResult};
 use crate::mangling::ManglingVersion;
 
 #[derive(Debug, Clone)]
@@ -158,9 +158,9 @@ impl IgnoreList {
     }
 
     pub fn from_file(path: &Path) -> Result<Self, ValidationError> {
-        let mut file = File::open(path).read_error(path)?;
+        let mut file = File::open(path).file_in_result(path)?;
         let mut content = String::new();
-        file.read_to_string(&mut content).read_error(path)?;
+        file.read_to_string(&mut content).file_in_result(path)?;
         Ok(Self {
             entries: regex::RegexSet::new(content.lines())?,
         })
@@ -508,7 +508,7 @@ fn load_binary(
     file: &Path,
     ignorelist: &IgnoreList,
 ) -> Result<Vec<ValidationSymbol>, ValidationError> {
-    let binary_data = fs::read(file).read_error(file)?;
+    let binary_data = fs::read(file).file_in_result(file)?;
     let obj = object::File::parse(&*binary_data)?;
     let mut classifications = classify_symbols(problems, ignorelist, &obj)?;
     Ok(obj
