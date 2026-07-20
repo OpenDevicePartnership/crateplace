@@ -57,15 +57,15 @@ pub fn init(manifest: Option<&Path>) -> Result<(), InitError> {
         return Err(InitError::MemoryFileExists);
     }
     let mut memory_toml_file =
-        File::create_new(memory_toml.clone()).file_out_result(&memory_toml)?;
+        File::create_new(memory_toml.clone()).into_in_result(&memory_toml)?;
     memory_toml_file
         .write_all(DEFAULT_MEMORY_TOML.as_bytes())
-        .file_out_result(&memory_toml)?;
+        .into_in_result(&memory_toml)?;
 
     let ignorelist = project_path.join(DEFAULT_IGNORELIST_NAME);
     crate::validation::IgnoreList::default()
         .to_file(&ignorelist)
-        .file_out_result(&ignorelist)?;
+        .into_in_result(&ignorelist)?;
 
     let mut build_rs = project_path.to_path_buf();
     build_rs.push("build.rs");
@@ -73,10 +73,10 @@ pub fn init(manifest: Option<&Path>) -> Result<(), InitError> {
         return Err(InitError::BuildRsExists);
     }
 
-    let mut build_rs_file = File::create_new(build_rs.clone()).file_out_result(&build_rs)?;
+    let mut build_rs_file = File::create_new(build_rs.clone()).into_in_result(&build_rs)?;
     build_rs_file
         .write_all(DEFAULT_BUILD_RS.as_bytes())
-        .file_out_result(&build_rs)?;
+        .into_in_result(&build_rs)?;
 
     Ok(())
 }

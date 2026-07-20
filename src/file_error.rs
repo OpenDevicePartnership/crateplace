@@ -18,19 +18,19 @@ pub enum FileError {
 }
 
 pub trait IOToFileResult<T> {
-    fn file_in_result(self, path: &Path) -> Result<T, FileError>;
-    fn file_out_result(self, path: &Path) -> Result<T, FileError>;
+    fn into_in_result(self, path: &Path) -> Result<T, FileError>;
+    fn into_out_result(self, path: &Path) -> Result<T, FileError>;
 }
 
 impl<T> IOToFileResult<T> for Result<T, Error> {
-    fn file_in_result(self, path: &Path) -> Result<T, FileError> {
+    fn into_out_result(self, path: &Path) -> Result<T, FileError> {
         self.map_err(|error| FileError::Out {
             error,
             filename: path.to_string_lossy().to_string(),
         })
     }
 
-    fn file_out_result(self, path: &Path) -> Result<T, FileError> {
+    fn into_in_result(self, path: &Path) -> Result<T, FileError> {
         self.map_err(|error| FileError::In {
             error,
             filename: path.to_string_lossy().to_string(),

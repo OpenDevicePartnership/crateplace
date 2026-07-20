@@ -154,9 +154,9 @@ impl IgnoreList {
     }
 
     pub fn from_file(path: &Path) -> Result<Self, ValidationError> {
-        let mut file = File::open(path).file_in_result(path)?;
+        let mut file = File::open(path).into_in_result(path)?;
         let mut content = String::new();
-        file.read_to_string(&mut content).file_in_result(path)?;
+        file.read_to_string(&mut content).into_in_result(path)?;
         Ok(Self {
             entries: regex::RegexSet::new(content.lines())?,
         })
@@ -504,7 +504,7 @@ fn load_binary(
     file: &Path,
     ignorelist: &IgnoreList,
 ) -> Result<Vec<ValidationSymbol>, ValidationError> {
-    let binary_data = fs::read(file).file_in_result(file)?;
+    let binary_data = fs::read(file).into_in_result(file)?;
     let obj = object::File::parse(&*binary_data)?;
     let mut classifications = classify_symbols(problems, ignorelist, &obj)?;
     Ok(obj

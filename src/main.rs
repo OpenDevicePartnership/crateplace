@@ -85,16 +85,73 @@ impl From<ManglingVersion> for crateplace::ManglingMatches {
 enum Add {
     /// Add a section to the config file
     Section {
+        /// The section name
         #[arg(short, long)]
         name: String,
+        /// Flash origin of the section
         #[arg(short, long)]
         origin: ByteUnit,
+        /// Length of the section
         #[arg(short, long)]
         length: ByteUnit,
         #[arg(short, long)]
+        /// Priority during assignment
         priority: u32,
+        /// Default section when unassigned
         #[arg(short, long)]
         default: bool,
+    },
+    /// Add a crate to the config file
+    Crate {
+        /// The crate name
+        #[arg(short, long)]
+        name: String,
+        /// The assigned section
+        #[arg(short, long)]
+        section: String,
+        /// Do not make dependencies inherit this assignment
+        #[arg(short('d'), long)]
+        nodeps: bool,
+    },
+    /// Add symbol globs to place specific symbols in flash
+    Symbol {
+        #[arg(short, long)]
+        /// The glob pattern to match the symbols
+        pattern: String,
+        #[arg(short, long)]
+        /// The section the symbols should be placed in
+        section: String,
+        #[arg(short('t'), long)]
+        /// Do not match symbols from the text section
+        notext: bool,
+        #[arg(short('r'), long)]
+        /// Do not match symbols from the rodata section
+        norodata: bool,
+        #[arg(short('d'), long)]
+        /// Do not match symbols from the datarel section
+        nodatarel: bool,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum Remove {
+    /// Remove a section from the config file
+    Section {
+        /// The section name
+        #[arg(short, long)]
+        name: String,
+    },
+    /// Remove a crate from the config file
+    Crate {
+        /// The crate name
+        #[arg(short, long)]
+        name: String,
+    },
+    /// Remove symbol pattern from the config file
+    Symbol {
+        /// The crate name
+        #[arg(short, long)]
+        pattern: String,
     },
 }
 
@@ -153,9 +210,23 @@ enum Command {
         #[arg(short, long)]
         show_ignored: bool,
     },
+    /// Validate the configuration file
+    ValidateConfig,
     /// Add to the config file
     #[command(subcommand)]
     Add(Add),
+    /// Remove from the config file
+    #[command(subcommand)]
+    Remove(Remove),
+    /// Set the origin and length of ram in the config file
+    SetRam {
+        /// Flash origin of the ram
+        #[arg(short, long)]
+        origin: ByteUnit,
+        /// Flash length of the ram
+        #[arg(short, long)]
+        length: ByteUnit,
+    },
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -297,7 +368,30 @@ fn perform_command(
             } => {
                 placer.add_section(&name, origin, length, priority, default)?;
             }
+            Add::Crate {
+                name,
+                nodeps,
+                section,
+            } => {
+                placer.add_crate(&name, &section, !nodeps)?;
+            }
+            Add::Symbol {
+                pattern,
+                section,
+                notext,
+                norodata,
+                nodatarel,
+            } => placer.add_symbol(&pattern, &section, !notext, !norodata, !nodatarel)?,
         },
+        Command::Remove(remove) => match remove {
+            Remove::Section { name } => {
+                placer.remove_section(&name)?;
+            }
+            Remove::Crate { name } => placer.remove_crate(&name)?,
+            Remove::Symbol { pattern } => placer.remove_symbol(&pattern)?,
+        },
+        Command::SetRam { origin, length } => placer.set_ram(origin, length)?,
+        Command::ValidateConfig => placer.validate_config()?,
     }
     Ok(())
 }

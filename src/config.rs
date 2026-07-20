@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
-use toml_edit::{DocumentMut, Formatted, InlineTable, Item, TomlError, Value};
+use toml_edit::{DocumentMut, Formatted, InlineTable, Item, Table, TomlError, Value};
 
 use crate::FileConfigData;
 use crate::file_error::{FileError, IOToFileResult};
@@ -162,7 +162,7 @@ impl FileConfigData for Config {
 
     fn from_file(path: &Path) -> Result<Self, Self::Error> {
         Ok(toml::from_str(
-            &fs::read_to_string(path).file_in_result(path)?,
+            &fs::read_to_string(path).into_in_result(path)?,
         )?)
     }
 }
@@ -318,19 +318,21 @@ impl Config {
         priority: u32,
         default: bool,
     ) -> Result<(), ConfigModificationError> {
-        let new_section = Section {
-            origin,
-            length,
-            priority,
-            default,
-        };
         if self.sections.contains_key(name) {
-            return Err(ConfigModificationError::SectionNameExists(name.to_string()));
+            return Err(ConfigModificationError::NameExists(name.to_string()));
         }
-        self.sections.insert(name.to_string(), new_section);
+        self.sections.insert(
+            name.to_string(),
+            Section {
+                origin,
+                length,
+                priority,
+                default,
+            },
+        );
         self.validate()?;
         let mut toml: DocumentMut = fs::read_to_string(config_path)
-            .file_in_result(config_path)?
+            .into_in_result(config_path)?
             .parse()?;
         if let Item::Table(table) = toml
             .get_mut("sections")
@@ -347,15 +349,237 @@ impl Config {
         } else {
             return Err(ConfigModificationError::UnexpectedType("sections"));
         }
-        fs::write(config_path, toml.to_string().into_bytes()).file_out_result(config_path)?;
+        fs::write(config_path, toml.to_string().into_bytes()).into_in_result(config_path)?;
+        Ok(())
+    }
+
+    pub fn remove_section(
+        &mut self,
+        config_path: &Path,
+        name: &str,
+    ) -> Result<(), ConfigModificationError> {
+        self.sections
+            .remove(name)
+            .ok_or_else(|| ConfigModificationError::NameDoesNotExist(name.to_string()))?;
+        self.validate()?;
+        let mut toml: DocumentMut = fs::read_to_string(config_path)
+            .into_in_result(config_path)?
+            .parse()?;
+        if let Item::Table(table) = toml
+            .get_mut("sections")
+            .ok_or(ConfigModificationError::FailedToFind("sections"))?
+        {
+            table
+                .remove(name)
+                .ok_or_else(|| ConfigModificationError::NameDoesNotExist(name.to_string()))?;
+        } else {
+            return Err(ConfigModificationError::UnexpectedType("sections"))?;
+        }
+        fs::write(config_path, toml.to_string().into_bytes()).into_in_result(config_path)?;
+        Ok(())
+    }
+
+    pub fn add_crate(
+        &mut self,
+        config_path: &Path,
+        name: &str,
+        section: &str,
+        include_dependencies: bool,
+    ) -> Result<(), ConfigModificationError> {
+        let crates = self.crates.get_or_insert_default();
+        if crates.contains_key(name) {
+            return Err(ConfigModificationError::NameExists(name.to_string()));
+        }
+        crates.insert(
+            name.to_string(),
+            CratePlacement {
+                section: section.to_string(),
+                include_dependencies,
+            },
+        );
+        self.validate()?;
+        let mut toml: DocumentMut = fs::read_to_string(config_path)
+            .into_in_result(config_path)?
+            .parse()?;
+
+        let mut entry = InlineTable::new();
+        entry.insert(
+            "section",
+            Value::String(Formatted::new(section.to_string())),
+        );
+        if include_dependencies {
+            entry.insert("include_dependencies", Value::Boolean(Formatted::new(true)));
+        }
+        let res = Item::Value(Value::InlineTable(entry));
+        match toml.get_mut("crates") {
+            Some(element) => match element {
+                Item::Table(table) => {
+                    table.insert(name, res);
+                }
+                _ => {
+                    return Err(ConfigModificationError::UnexpectedType("crates"));
+                }
+            },
+            None => {
+                let mut table = Table::new();
+                table.insert(name, res);
+                toml.insert("crates", Item::Table(table));
+            }
+        };
+        fs::write(config_path, toml.to_string().into_bytes()).into_in_result(config_path)?;
+        Ok(())
+    }
+
+    pub fn remove_crate(
+        &mut self,
+        config_path: &Path,
+        name: &str,
+    ) -> Result<(), ConfigModificationError> {
+        let crates = self.crates.get_or_insert_default();
+        if crates.remove(name).is_none() {
+            return Err(ConfigModificationError::NameDoesNotExist(name.to_string()));
+        }
+        self.validate()?;
+        let mut toml: DocumentMut = fs::read_to_string(config_path)
+            .into_in_result(config_path)?
+            .parse()?;
+        match toml.get_mut("crates") {
+            Some(table) => match table {
+                Item::Table(table) => table
+                    .remove(name)
+                    .ok_or_else(|| ConfigModificationError::NameDoesNotExist(name.to_string()))?,
+                _ => return Err(ConfigModificationError::UnexpectedType("crates")),
+            },
+            None => {
+                return Err(ConfigModificationError::NameDoesNotExist(
+                    "crates".to_string(),
+                ));
+            }
+        };
+        fs::write(config_path, toml.to_string().into_bytes()).into_in_result(config_path)?;
+        Ok(())
+    }
+
+    pub fn add_symbol(
+        &mut self,
+        config_path: &Path,
+        pattern: &str,
+        section: &str,
+        text: bool,
+        rodata: bool,
+        datarel: bool,
+    ) -> Result<(), ConfigModificationError> {
+        let symbols = self.symbols.get_or_insert_default();
+        if symbols.contains_key(pattern) {
+            return Err(ConfigModificationError::NameExists(pattern.to_string()));
+        }
+        symbols.insert(
+            pattern.to_string(),
+            SymPlacement {
+                section: section.to_string(),
+                symbol_types: SymbolTypes {
+                    text,
+                    rodata,
+                    datarel,
+                },
+            },
+        );
+        self.validate()?;
+
+        let mut toml: DocumentMut = fs::read_to_string(config_path)
+            .into_in_result(config_path)?
+            .parse()?;
+        let mut entry = InlineTable::new();
+        entry.insert(
+            "section",
+            Value::String(Formatted::new(section.to_string())),
+        );
+        if text {
+            entry.insert("text", Value::Boolean(Formatted::new(true)));
+        }
+        if text {
+            entry.insert("rodata", Value::Boolean(Formatted::new(true)));
+        }
+        if text {
+            entry.insert("datarel", Value::Boolean(Formatted::new(true)));
+        }
+        let res = Item::Value(Value::InlineTable(entry));
+        match toml.get_mut("symbols") {
+            Some(element) => match element {
+                Item::Table(table) => {
+                    table.insert(pattern, res);
+                }
+                _ => {
+                    return Err(ConfigModificationError::UnexpectedType("crates"));
+                }
+            },
+            None => {
+                let mut table = Table::new();
+                table.insert(pattern, res);
+                toml.insert("symbols", Item::Table(table));
+            }
+        };
+        fs::write(config_path, toml.to_string().into_bytes()).into_in_result(config_path)?;
+        Ok(())
+    }
+    pub fn remove_symbol(
+        &mut self,
+        config_path: &Path,
+        pattern: &str,
+    ) -> Result<(), ConfigModificationError> {
+        let symbols = self.symbols.get_or_insert_default();
+        if symbols.remove(pattern).is_none() {
+            return Err(ConfigModificationError::NameDoesNotExist(
+                pattern.to_string(),
+            ));
+        }
+        self.validate()?;
+        let mut toml: DocumentMut = fs::read_to_string(config_path)
+            .into_in_result(config_path)?
+            .parse()?;
+        match toml.get_mut("symbols") {
+            Some(table) => match table {
+                Item::Table(table) => table.remove(pattern).ok_or_else(|| {
+                    ConfigModificationError::NameDoesNotExist(pattern.to_string())
+                })?,
+                _ => return Err(ConfigModificationError::UnexpectedType("symbols")),
+            },
+            None => {
+                return Err(ConfigModificationError::NameDoesNotExist(
+                    "symbols".to_string(),
+                ));
+            }
+        };
+        fs::write(config_path, toml.to_string().into_bytes()).into_in_result(config_path)?;
+        Ok(())
+    }
+
+    pub fn set_ram(
+        &mut self,
+        config_path: &Path,
+        origin: ByteUnit,
+        length: ByteUnit,
+    ) -> Result<(), ConfigModificationError> {
+        self.ram = Ram { origin, length };
+        self.validate()?;
+        let mut toml: DocumentMut = fs::read_to_string(config_path)
+            .into_in_result(config_path)?
+            .parse()?;
+        let mut entry = InlineTable::new();
+        entry.insert("origin", Value::String(Formatted::new(origin.to_string())));
+        entry.insert("length", Value::String(Formatted::new(length.to_string())));
+        toml.insert("ram", Item::Value(Value::InlineTable(entry)));
+        fs::write(config_path, toml.to_string().into_bytes()).into_in_result(config_path)?;
         Ok(())
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigModificationError {
-    #[error("Section name already exists: {0}")]
-    SectionNameExists(String),
+    #[error("Name already exists: {0}")]
+    NameExists(String),
+    #[error("Name does not exist: {0}")]
+    NameDoesNotExist(String),
     #[error("Validation")]
     Validation(
         #[source]

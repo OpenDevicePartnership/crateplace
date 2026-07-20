@@ -413,10 +413,10 @@ impl CratePlacer {
             println!("{}", linkerscript);
         } else {
             let output_file = self.get_output_file()?;
-            let mut output = File::create(output_file).file_out_result(output_file)?;
+            let mut output = File::create(output_file).into_in_result(output_file)?;
             output
                 .write_all(linkerscript.as_bytes())
-                .file_out_result(output_file)?;
+                .into_in_result(output_file)?;
         }
         Ok(())
     }
@@ -471,7 +471,7 @@ impl CratePlacer {
         let new_list = IgnoreList::new(&patterns)?;
         new_list
             .to_file(&ignore_list_path)
-            .file_out_result(&ignore_list_path)?;
+            .into_in_result(&ignore_list_path)?;
         self.ignorelist.set(new_list);
         Ok(())
     }
@@ -531,6 +531,12 @@ impl CratePlacer {
         self.validate(Path::new(&output.ok_or(CratePlacerError::NoOutputBinary)?))
     }
 
+    fn modify_config(&mut self) -> Result<(&mut Config, PathBuf), CratePlacerError> {
+        let manifest_dir = get_manifest_dir(&mut self.manifest);
+        let config_path = self.config.get_path(manifest_dir)?.to_path_buf();
+        Ok((self.config.get_mut(manifest_dir)?, config_path))
+    }
+
     pub fn add_section(
         &mut self,
         name: &str,
@@ -539,9 +545,56 @@ impl CratePlacer {
         priority: u32,
         default: bool,
     ) -> Result<(), CratePlacerError> {
-        let manifest_dir = get_manifest_dir(&mut self.manifest);
-        let config_path = self.config.get_path(manifest_dir)?.to_path_buf();
-        let config = self.config.get_mut(manifest_dir)?;
+        let (config, config_path) = self.modify_config()?;
         Ok(config.add_section(&config_path, name, origin, length, priority, default)?)
+    }
+
+    pub fn add_crate(
+        &mut self,
+        name: &str,
+        section: &str,
+        include_dependencies: bool,
+    ) -> Result<(), CratePlacerError> {
+        let (config, config_path) = self.modify_config()?;
+        Ok(config.add_crate(&config_path, name, section, include_dependencies)?)
+    }
+
+    pub fn add_symbol(
+        &mut self,
+        pattern: &str,
+        section: &str,
+        text: bool,
+        rodata: bool,
+        datarel: bool,
+    ) -> Result<(), CratePlacerError> {
+        let (config, config_path) = self.modify_config()?;
+        Ok(config.add_symbol(&config_path, pattern, section, text, rodata, datarel)?)
+    }
+
+    pub fn remove_section(&mut self, name: &str) -> Result<(), CratePlacerError> {
+        let (config, path) = self.modify_config()?;
+        Ok(config.remove_section(&path, name)?)
+    }
+
+    pub fn remove_crate(&mut self, name: &str) -> Result<(), CratePlacerError> {
+        let (config, path) = self.modify_config()?;
+        Ok(config.remove_crate(&path, name)?)
+    }
+
+    pub fn remove_symbol(&mut self, pattern: &str) -> Result<(), CratePlacerError> {
+        let (config, path) = self.modify_config()?;
+        Ok(config.remove_symbol(&path, pattern)?)
+    }
+
+    pub fn set_ram(&mut self, origin: ByteUnit, length: ByteUnit) -> Result<(), CratePlacerError> {
+        let (config, path) = self.modify_config()?;
+        Ok(config.set_ram(&path, origin, length)?)
+    }
+
+    pub fn validate_config(&mut self) -> Result<(), CratePlacerError> {
+        Ok(self
+            .config
+            .get(get_manifest_dir(&mut self.manifest))?
+            .validate()?)
     }
 }
