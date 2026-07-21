@@ -49,7 +49,7 @@ fn generate_memory(config: &Config) -> String {
             {name} : ORIGIN = {origin}, LENGTH = {length}"}
         })
         .collect::<Vec<_>>()
-        .join("    ")
+        .join("\n    ")
 }
 
 fn generate_dep_matches(section_name: &str, deps: &DepTree, mangling: ManglingMatches) -> String {
@@ -70,7 +70,7 @@ fn generate_dep_matches(section_name: &str, deps: &DepTree, mangling: ManglingMa
                 .map(|mangled| {
                     formatdoc! {"
                         *(.text.{mangled}*)
-                        *(.text.unlikely.{mangled}*)
+                                *(.text.unlikely.{mangled}*)
                                 *(.rodata.{mangled}*)
                                 *(.data.rel.ro.{mangled}*)
                     "}
@@ -111,7 +111,7 @@ fn generate_symbol_matches(section_name: &str, config: &Config) -> Option<String
     if text.is_empty() {
         None
     } else {
-        Some(text.join("        ") + "        ")
+        Some(text.join("") + "        ")
     }
 }
 
@@ -159,17 +159,34 @@ fn generate_user_sections(config: &Config) -> String {
     }
 }
 
-pub fn generate_script(config: &Config, deps: &DepTree, mangling: ManglingMatches) -> String {
+pub fn generate_script(
+    config: &Config,
+    deps: &DepTree,
+    mangling: ManglingMatches,
+    pre: Option<&str>,
+    post: Option<&str>,
+) -> String {
     let memory = generate_memory(config);
     let crate_sections = generate_crate_sections(config, deps, mangling);
     let user_sections = generate_user_sections(config);
     let ram_origin = &config.ram.origin;
     let ram_len = &config.ram.length;
+    let mut pre_str = None;
+    let pre = pre
+        .map(|pre| pre_str.insert(format!("INCLUDE {pre}\n")).as_str())
+        .unwrap_or("");
+    let mut post_str = None;
+    let post = post
+        .map(|post| post_str.insert(format!("\nINCLUDE {post}")).as_str())
+        .unwrap_or("");
     formatdoc! {"
+        {pre}
         MEMORY {{
             RAM : ORIGIN = {ram_origin}, LENGTH = {ram_len}
-            {memory}}}
+            {memory}
+        }}
 
         SECTIONS {{{user_sections}{crate_sections}}} INSERT AFTER .text
+        {post}
     "}
 }

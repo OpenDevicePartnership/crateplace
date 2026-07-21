@@ -1,6 +1,7 @@
+use anstream::println;
 use clap::builder::styling::{AnsiColor, Color, Style};
 use clap::{Parser, Subcommand};
-use crateplace::validation::ProblemLevel;
+use crateplace::validation::{ProblemLevel, ValidationProblem};
 use crateplace::{
     CratePlacer, CratePlacerError,
     deps::Inverted,
@@ -49,6 +50,7 @@ enum CommandlineError {
 enum ManglingVersion {
     Legacy,
     V0,
+    All,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -62,16 +64,18 @@ impl FromStr for ManglingVersion {
         match s {
             "legacy" => Ok(Self::Legacy),
             "v0" => Ok(Self::V0),
+            "all" => Ok(Self::All),
             _ => Err(ManglingParseError),
         }
     }
 }
 
-impl From<ManglingVersion> for crateplace::mangling::ManglingVersion {
+impl From<ManglingVersion> for crateplace::ManglingMatches {
     fn from(value: ManglingVersion) -> Self {
         match value {
-            ManglingVersion::Legacy => crateplace::mangling::ManglingVersion::Legacy,
-            ManglingVersion::V0 => crateplace::mangling::ManglingVersion::V0,
+            ManglingVersion::Legacy => crateplace::ManglingMatches::Legacy,
+            ManglingVersion::V0 => crateplace::ManglingMatches::V0,
+            ManglingVersion::All => crateplace::ManglingMatches::All,
         }
     }
 }
@@ -101,6 +105,12 @@ enum Command {
         /// Mangling version to use for script generation
         #[arg(short, long)]
         rustc_mangling_version: Option<ManglingVersion>,
+        /// Include extra linkerscript before the crateplace script
+        #[arg(short, long)]
+        before_script: Option<String>,
+        /// Include extra linkerscript after the crateplace script
+        #[arg(short, long)]
+        after_script: Option<String>,
     },
     /// Setup default build.rs and Memory.toml files
     Init,
@@ -113,7 +123,17 @@ enum Command {
     /// Validate the output using debug info
     Validate {
         /// Path to binary file
-        binary: Option<PathBuf>,
+        #[arg(short, long)]
+        file: Option<PathBuf>,
+        /// Ignore file containing symbol regex
+        #[arg(short, long)]
+        ignore_file: Option<PathBuf>,
+        /// Add misplaced symbols to the ignore file
+        #[arg(short, long)]
+        bless: bool,
+        /// Show ignored symbols
+        #[arg(short, long)]
+        show_ignored: bool,
     },
 }
 
@@ -158,9 +178,17 @@ fn perform_command(
             output,
             stdout,
             rustc_mangling_version,
+            before_script,
+            after_script,
         } => {
             if let Some(output) = &output {
                 placer.output(output.as_path());
+            }
+            if let Some(pre_script) = &before_script {
+                placer.pre_script(pre_script);
+            }
+            if let Some(post_script) = &after_script {
+                placer.post_script(post_script);
             }
             placer.stdout(stdout);
             placer.write_linkerscript(rustc_mangling_version.map(Into::into))?
@@ -176,31 +204,65 @@ fn perform_command(
             let version = rustc_mangling_version(rustc.as_deref(), rustflags)?;
             println!("{version}");
         }
-        Command::Validate { binary } => {
-            let problems = match binary {
+        Command::Validate {
+            file,
+            ignore_file,
+            bless,
+            show_ignored,
+        } => {
+            if let Some(ignore_file) = ignore_file {
+                placer.ignorelist_file(ignore_file);
+            }
+            let problems = match file {
                 Some(binary) => placer.validate(&binary),
                 None => placer.build_then_validate(),
             }?;
+            if bless {
+                placer.bless(&problems)?;
+            }
+            let error = Style::new()
+                .fg_color(Some(Color::Ansi(AnsiColor::Red)))
+                .bold();
+            let warning = Style::new()
+                .fg_color(Some(Color::Ansi(AnsiColor::Yellow)))
+                .bold();
+            let ignored = Style::new()
+                .fg_color(Some(Color::Ansi(AnsiColor::Blue)))
+                .bold();
+            let mut problem_count = 0;
+            let mut custom_symbol_error = false;
             for problem in &problems {
-                let error = Style::new()
-                    .fg_color(Some(Color::Ansi(AnsiColor::Red)))
-                    .bold();
-                let warning = Style::new()
-                    .fg_color(Some(Color::Ansi(AnsiColor::Yellow)))
-                    .bold();
+                if let ValidationProblem::SymbolAssignment { owner, .. } = problem
+                    && owner.contains("custom")
+                {
+                    custom_symbol_error = true;
+                }
 
                 let prep = match problem.problem_level() {
                     ProblemLevel::Error => {
+                        problem_count += 1;
                         format!("{error}Error:{error:#}")
                     }
                     ProblemLevel::Warning => {
+                        problem_count += 1;
                         format!("{warning}Warning:{warning:#}")
+                    }
+                    ProblemLevel::Ignored => {
+                        if !show_ignored {
+                            continue;
+                        }
+                        format!("{ignored}Ignored:{ignored:#}")
                     }
                 };
 
                 println!("{prep} {problem}");
             }
-            if !problems.is_empty() {
+            if custom_symbol_error {
+                println!(
+                    "{warning}NOTE:{warning:#} custom symbol assignments on non-Rust symbols need to be compiled with \"-ffunction-sections -fdata-sections\" or crateplace will not be able to control their placement."
+                );
+            }
+            if problem_count != 0 {
                 std::process::exit(2);
             }
         }
