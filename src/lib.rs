@@ -446,7 +446,6 @@ impl CratePlacer {
                 ValidationProblem::NonExistentSectionCrate { .. }
                 | ValidationProblem::Ignored(..)
                 | ValidationProblem::InvalidGlobPattern { .. }
-                | ValidationProblem::InvalidNumber { .. }
                 | ValidationProblem::SectionOverflow { .. } => return None,
             };
             let new = format!("^{name}$");

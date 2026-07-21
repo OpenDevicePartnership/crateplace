@@ -37,7 +37,7 @@ Alternatively the files can be made manually. The default `Memory.toml` looks li
 ram = { origin = "0x20000000", length = "128K" }
 
 [sections]
-flash = { origin = "0x00000000\", length = "1M", priority = 1 }
+flash = { origin = "0x00000000", length = "1M", priority = 1 }
 
 [crates]
 ```
