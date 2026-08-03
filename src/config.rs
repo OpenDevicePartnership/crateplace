@@ -23,7 +23,7 @@ pub enum ByteUnit {
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
-#[error("Failed to parse byte unit: {0}")]
+#[error("failed to parse byte unit: {0}")]
 pub struct UnitParseError(String);
 
 impl FromStr for ByteUnit {
@@ -65,7 +65,7 @@ impl ByteUnit {
 impl std::fmt::Display for ByteUnit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ByteUnit::H(value) => write!(f, "{value:02X}"),
+            ByteUnit::H(value) => write!(f, "0x{value:02X}"),
             ByteUnit::B(value) => write!(f, "{value}"),
             ByteUnit::K(value) => write!(f, "{value}K"),
             ByteUnit::M(value) => write!(f, "{value}M"),
@@ -143,13 +143,13 @@ pub struct Config {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigLoadError {
-    #[error("Toml parse error")]
+    #[error("toml parsing")]
     TomlParseError(
         #[source]
         #[from]
         toml::de::Error,
     ),
-    #[error("File error")]
+    #[error("file error")]
     FileError(
         #[source]
         #[from]
@@ -169,26 +169,26 @@ impl FileConfigData for Config {
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ConfigValidationError {
-    #[error("Section \"{1}\" overlaps with \"{0}\"")]
+    #[error("section \"{1}\" overlaps with \"{0}\"")]
     Overlap(String, String),
-    #[error("Failed to parse \"{0}\" as a memory offset")]
+    #[error("failed to parse \"{0}\" as a memory offset")]
     ParseError(
         #[source]
         #[from]
         UnitParseError,
     ),
-    #[error("Parse error")]
+    #[error("parse error")]
     ZeroSection(String),
-    #[error("Section overflowed when calculating end position: \"{0}\"")]
+    #[error("section overflowed when calculating end position: \"{0}\"")]
     OverFlow(String),
-    #[error("Section has a priority which was already used: \"{0}\" with priority: {1}")]
+    #[error("section has a priority which was already used: \"{0}\" with priority: {1}")]
     DoublePrio(String, u32),
     #[error("\"{0}\" was assigned non-existent section: \"{1}\"")]
     NonExistentSection(String, String),
-    #[error("Multiple sections are marked as default")]
+    #[error("sultiple sections are marked as default")]
     MultipleDefaults,
     #[error(
-        "Symbol assigned to emit no sections: {0}, symbol should have at least one of: text, rodata, or reldata set to true"
+        "symbol assigned to emit no sections: {0}, symbol should have at least one of: text, rodata, or reldata set to true"
     )]
     SymbolWithoutSections(String),
 }
@@ -373,7 +373,7 @@ impl Config {
                 .remove(name)
                 .ok_or_else(|| ConfigModificationError::NameDoesNotExist(name.to_string()))?;
         } else {
-            return Err(ConfigModificationError::UnexpectedType("sections"))?;
+            Err(ConfigModificationError::UnexpectedType("sections"))?
         }
         fs::write(config_path, toml.to_string().into_bytes()).into_in_result(config_path)?;
         Ok(())
@@ -576,30 +576,30 @@ impl Config {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigModificationError {
-    #[error("Name already exists: {0}")]
+    #[error("name already exists: {0}")]
     NameExists(String),
-    #[error("Name does not exist: {0}")]
+    #[error("name does not exist: {0}")]
     NameDoesNotExist(String),
-    #[error("Validation")]
+    #[error("validation")]
     Validation(
         #[source]
         #[from]
         ConfigValidationError,
     ),
-    #[error("File error: {0}")]
+    #[error("file error: {0}")]
     FileError(
         #[source]
         #[from]
         FileError,
     ),
-    #[error("Toml error: {0}")]
+    #[error("toml error: {0}")]
     TomlError(
         #[source]
         #[from]
         TomlError,
     ),
-    #[error("Failed to find: {0}")]
+    #[error("failed to find: {0}")]
     FailedToFind(&'static str),
-    #[error("Unexpected type: {0}")]
+    #[error("unexpected type: {0}")]
     UnexpectedType(&'static str),
 }

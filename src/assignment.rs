@@ -5,9 +5,9 @@ use crate::{
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum AssignmentError {
-    #[error("Failed to find {0} in dependencies")]
+    #[error("failed to find {0} in dependencies")]
     CrateNotFound(String),
-    #[error("Section not defined in [sections]: \"{section_name}\", assigned to \"{crate_name}\"")]
+    #[error("section not defined in [sections]: \"{section_name}\", assigned to \"{crate_name}\"")]
     SectionMissing {
         crate_name: String,
         section_name: String,
@@ -20,7 +20,7 @@ fn apply_default(config: &Config, deps: &mut DepTree) {
         .iter()
         .find_map(|(name, section)| section.default.then_some((name, section.clone())))
     {
-        for (_, node) in deps.crates.iter_mut() {
+        for node in deps.crates.values_mut() {
             if node.assignment.is_none() {
                 node.assignment = Some(SectionAssignment {
                     name: name.clone(),

@@ -15,8 +15,9 @@ use crate::{
     validation::{IgnoreList, ValidationError, ValidationProblem},
 };
 
-use anstream::println;
+use anstream::{eprint, eprintln, println};
 use cargo_metadata::Message;
+use clap::builder::styling::{AnsiColor, Color, Style};
 use deps::{DepsError, get_deps};
 use std::{
     env,
@@ -29,20 +30,20 @@ use std::{
 
 pub use generation::ManglingMatches;
 
-const DEFAULT_CONFIG_NAME: &str = "Memory.toml";
-const DEFAULT_OUTPUT_NAME: &str = "memory.x";
-const DEFAULT_IGNORELIST_NAME: &str = ".crateplace-ignore";
+pub const DEFAULT_CONFIG_NAME: &str = "Memory.toml";
+pub const DEFAULT_OUTPUT_NAME: &str = "memory.x";
+pub const DEFAULT_IGNORELIST_NAME: &str = ".crateplace-ignore";
 const CARGO_MANIFEST: &str = "Cargo.toml";
 
 #[derive(thiserror::Error, Debug)]
 pub enum CratePlacerError {
-    #[error("Failed to retrieve dependencies")]
+    #[error("failed to retrieve dependencies")]
     Deps(
         #[source]
         #[from]
         DepsError,
     ),
-    #[error("Failed to parse toml")]
+    #[error("failed to parse toml")]
     TomlParse(
         #[source]
         #[from]
@@ -54,56 +55,56 @@ pub enum CratePlacerError {
         err: std::io::Error,
         path: String,
     },
-    #[error("Failed to assign sections to crates")]
+    #[error("failed to assign sections to crates")]
     Placement(
         #[source]
         #[from]
         AssignmentError,
     ),
-    #[error("Output path had no parent: {0}")]
+    #[error("output path had no parent: {0}")]
     InvalidPath(String),
-    #[error("Failed to find {0}")]
+    #[error("failed to find {0}")]
     FailedToFindConfig(String),
-    #[error("Failed to find Cargo.toml")]
+    #[error("failed to find Cargo.toml")]
     NoOutput,
-    #[error("Failed to find crate: {0}")]
+    #[error("failed to find crate: {0}")]
     DepNotFound(String),
-    #[error("Invalid configuration")]
+    #[error("invalid configuration")]
     InvalidConfig(
         #[source]
         #[from]
         ConfigValidationError,
     ),
-    #[error("Failed to detect mangling version")]
+    #[error("failed to detect mangling version")]
     ManglingDetectionError(
         #[source]
         #[from]
         ManglingDetectionError,
     ),
 
-    #[error("Validation")]
+    #[error("validation")]
     ValidationError(
         #[source]
         #[from]
         ValidationError,
     ),
-    #[error("Build error")]
+    #[error("build")]
     BuildError,
-    #[error("Project has no output binary")]
+    #[error("project has no output binary")]
     NoOutputBinary,
-    #[error("Failed to load config")]
+    #[error("failed to load config")]
     ConifgLoadError(
         #[source]
         #[from]
         ConfigLoadError,
     ),
-    #[error("File error")]
+    #[error("file error")]
     FileError(
         #[source]
         #[from]
         FileError,
     ),
-    #[error("Config edit error")]
+    #[error("config modification")]
     ConfigModificationError(
         #[source]
         #[from]
@@ -112,11 +113,13 @@ pub enum CratePlacerError {
 }
 
 pub fn report(mut err: &dyn Error) {
-    eprint!("{err}");
+    let error = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Red)));
+    eprint!("{error}{err}{error:#}");
     while let Some(source) = err.source() {
         eprint!(": {source}");
         err = source;
     }
+    eprintln!();
 }
 
 fn divine_mangling() -> Result<ManglingVersion, CratePlacerError> {
@@ -230,7 +233,7 @@ impl Default for CratePlacer {
     }
 }
 
-pub(crate) fn look_up(filename: &Path) -> Option<PathBuf> {
+pub fn look_up(filename: &Path) -> Option<PathBuf> {
     let curdir = env::current_dir().ok()?;
     let mut dir = curdir.as_path();
     loop {

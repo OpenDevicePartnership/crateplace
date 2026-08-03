@@ -3,13 +3,13 @@ use std::path::Path;
 
 #[derive(thiserror::Error, Debug)]
 pub enum FileError {
-    #[error("Failed to write to file: {filename}")]
+    #[error("failed to read file: {filename}")]
     In {
         #[source]
         error: std::io::Error,
         filename: String,
     },
-    #[error("Failed to read file: {filename}")]
+    #[error("failed to write to file: {filename}")]
     Out {
         #[source]
         error: std::io::Error,

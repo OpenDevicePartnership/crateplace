@@ -26,7 +26,7 @@ pub enum ProblemLevel {
 #[derive(Debug, thiserror::Error)]
 pub enum ValidationProblem {
     #[error(
-        "Symbol too big: \"{name}\"start: {symbol_start:02x}, end: {symbol_end:02x}, section: \"{section_name}\" end: {section_end:02x}"
+        "symbol too big: \"{name}\"start: {symbol_start:02x}, end: {symbol_end:02x}, section: \"{section_name}\" end: {section_end:02x}"
     )]
     SymbolTooBig {
         name: String,
@@ -36,7 +36,7 @@ pub enum ValidationProblem {
         section_end: u64,
     },
     #[error(
-        "Symbol placed incorrectly: \"{name}\" position: {symbol_position:02x}, section \"{section_name}\" start: {section_start:02x} end: {section_end:02x}"
+        "symbol placed incorrectly: \"{name}\" position: {symbol_position:02x}, section \"{section_name}\" start: {section_start:02x} end: {section_end:02x}"
     )]
     SymbolPlacement {
         name: String,
@@ -46,7 +46,7 @@ pub enum ValidationProblem {
         section_end: u64,
     },
     #[error(
-        "Symbol placed incorrectly: \"{name}\", belonging to {owner} section: \"{correct_section}\", actual section: \"{actual_section}\""
+        "symbol placed incorrectly: \"{name}\", belonging to {owner} section: \"{correct_section}\", actual section: \"{actual_section}\""
     )]
     SymbolAssignment {
         name: String,
@@ -54,31 +54,31 @@ pub enum ValidationProblem {
         correct_section: String,
         actual_section: String,
     },
-    #[error("Unknown mangling scheme: \"{name}, mangled: \"{mangled_name}\"")]
+    #[error("unknown mangling scheme: \"{name}, mangled: \"{mangled_name}\"")]
     UnknownManglingScheme { name: String, mangled_name: String },
-    #[error("Failed to identify crate of: \"{name}\"")]
+    #[error("failed to identify crate of: \"{name}\"")]
     NoCrateName { name: String },
-    #[error("Failed to classify symbol: \"{name}\"")]
+    #[error("failed to classify symbol: \"{name}\"")]
     ClassificationFailure { name: String },
-    #[error("Symbol \"{name}\" owned by non-existent crate: \"{crate_name}\"")]
+    #[error("symbol \"{name}\" owned by non-existent crate: \"{crate_name}\"")]
     NonExistentCrate { name: String, crate_name: String },
-    #[error("Crate \"{crate_name}\" assigned to non-existent section: \"{section}\"")]
+    #[error("crate \"{crate_name}\" assigned to non-existent section: \"{section}\"")]
     NonExistentSectionCrate { crate_name: String, section: String },
-    #[error("Symbol \"{symbol}\" assigned to non-existent section: \"{section}\"")]
+    #[error("symbol \"{symbol}\" assigned to non-existent section: \"{section}\"")]
     NonExistentSection { symbol: String, section: String },
-    #[error("Glob pattern is invalid: \"{pattern}\"")]
+    #[error("glob pattern is invalid: \"{pattern}\"")]
     InvalidGlobPattern {
         pattern: String,
         #[source]
         error: glob::PatternError,
     },
-    #[error("Overflow computing section end: {section} start: {start:02x} length: {length:02x}")]
+    #[error("overflow computing section end: {section} start: {start:02x} length: {length:02x}")]
     SectionOverflow {
         section: String,
         start: u64,
         length: u64,
     },
-    #[error("Overflow computing symbol end: {symbol} start: {start:02x} length: {length:02x}")]
+    #[error("overflow computing symbol end: {symbol} start: {start:02x} length: {length:02x}")]
     SymbolOverflow {
         symbol: String,
         start: u64,

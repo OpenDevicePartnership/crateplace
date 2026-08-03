@@ -20,17 +20,17 @@ const BOLD: Style = Style::new().bold();
 
 #[derive(thiserror::Error, Debug)]
 pub enum DepsError {
-    #[error("Failed to retrieve dependencies from cargo")]
+    #[error("failed to retrieve dependencies from cargo")]
     CargoError(
         #[source]
         #[from]
         cargo_metadata::Error,
     ),
-    #[error("No dependencies found")]
+    #[error("no dependencies found")]
     NoDeps,
-    #[error("Missing root package")]
+    #[error("missing root package")]
     Noroot,
-    #[error("Missing root package")]
+    #[error("missing root package")]
     CrateNotFound(String),
 }
 
