@@ -1,7 +1,7 @@
 use serde::Serialize;
-use serde::de::Error as DeSerializationError;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::num::ParseIntError;
 use std::path::Path;
 use std::str::FromStr;
 use toml_edit::{DocumentMut, Formatted, InlineTable, Item, Table, TomlError, Value};
@@ -14,62 +14,125 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum ByteUnit {
-    H(u64),
-    B(u64),
-    K(u64),
-    M(u64),
-    G(u64),
+pub struct ByteUnit {
+    bytes: u64,
+    format: ByteFormat,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ByteFormat {
+    Hex,
+    Bytes,
+    Kibi,
+    Mebi,
+    Gibi,
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
-#[error("failed to parse byte unit: {0}")]
-pub struct UnitParseError(String);
+pub enum UnitParseError {
+    #[error("overflowed while converting: {0}, the number is too big")]
+    OverFlow(String),
+    #[error("failed to parse number: {0}")]
+    Parsing(String, #[source] ParseIntError),
+}
 
 impl FromStr for ByteUnit {
     type Err = UnitParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-            return Ok(ByteUnit::H(
-                u64::from_str_radix(hex, 16).map_err(|_| UnitParseError(s.to_owned()))?,
-            ));
+            return Ok(ByteUnit {
+                bytes: u64::from_str_radix(hex, 16)
+                    .map_err(|err| UnitParseError::Parsing(s.to_owned(), err))?,
+                format: ByteFormat::Hex,
+            });
         }
-        Ok(match s.chars().last() {
-            Some('K') => ByteUnit::K(
-                u64::from_str(&s[..s.len() - 1]).map_err(|_| UnitParseError(s.to_string()))?,
-            ),
-            Some('M') => ByteUnit::M(
-                u64::from_str(&s[..s.len() - 1]).map_err(|_| UnitParseError(s.to_string()))?,
-            ),
-            Some('G') => ByteUnit::G(
-                u64::from_str(&s[..s.len() - 1]).map_err(|_| UnitParseError(s.to_string()))?,
-            ),
-            _ => ByteUnit::B(u64::from_str(s).map_err(|_| UnitParseError(s.to_string()))?),
+        Ok(match s.chars().last().map(|c| c.to_ascii_uppercase()) {
+            Some('K') => ByteUnit {
+                bytes: u64::from_str(&s[..s.len() - 1])
+                    .map_err(|err| UnitParseError::Parsing(s.to_string(), err))?
+                    .checked_mul(1024)
+                    .ok_or_else(|| UnitParseError::OverFlow(s.to_string()))?,
+                format: ByteFormat::Kibi,
+            },
+            Some('M') => ByteUnit {
+                bytes: u64::from_str(&s[..s.len() - 1])
+                    .map_err(|err| UnitParseError::Parsing(s.to_string(), err))?
+                    .checked_mul(1024 * 1024)
+                    .ok_or_else(|| UnitParseError::OverFlow(s.to_string()))?,
+                format: ByteFormat::Mebi,
+            },
+            Some('G') => ByteUnit {
+                bytes: u64::from_str(&s[..s.len() - 1])
+                    .map_err(|err| UnitParseError::Parsing(s.to_string(), err))?
+                    .checked_mul(1024 * 1024 * 1024)
+                    .ok_or_else(|| UnitParseError::OverFlow(s.to_string()))?,
+                format: ByteFormat::Gibi,
+            },
+            _ => ByteUnit {
+                bytes: u64::from_str(s)
+                    .map_err(|err| UnitParseError::Parsing(s.to_string(), err))?,
+                format: ByteFormat::Bytes,
+            },
         })
     }
 }
 
 impl ByteUnit {
+    pub fn new(bytes: u64, format: ByteFormat) -> Self {
+        Self { bytes, format }
+    }
+
     pub fn as_bytes(&self) -> u64 {
-        match self {
-            ByteUnit::H(value) => *value,
-            ByteUnit::B(value) => *value,
-            ByteUnit::K(value) => value * 1024,
-            ByteUnit::M(value) => value * 1024 * 1024,
-            ByteUnit::G(value) => value * 1024 * 1024 * 1024,
-        }
+        self.bytes
+    }
+}
+
+struct ByteUnitVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ByteUnitVisitor {
+    type Value = ByteUnit;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a byte size or length: an integer, or a string like \"512K\" / \"0x1000\"")
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        ByteUnit::from_str(v).map_err(E::custom)
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(ByteUnit {
+            bytes: u64::try_from(v).map_err(|_| E::custom("byte unit cannot be negative"))?,
+            format: ByteFormat::Bytes,
+        })
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(ByteUnit {
+            bytes: v,
+            format: ByteFormat::Bytes,
+        })
     }
 }
 
 impl std::fmt::Display for ByteUnit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ByteUnit::H(value) => write!(f, "0x{value:02X}"),
-            ByteUnit::B(value) => write!(f, "{value}"),
-            ByteUnit::K(value) => write!(f, "{value}K"),
-            ByteUnit::M(value) => write!(f, "{value}M"),
-            ByteUnit::G(value) => write!(f, "{value}G"),
+        match self.format {
+            ByteFormat::Hex => write!(f, "0x{:02X}", self.bytes),
+            ByteFormat::Bytes => write!(f, "{}", self.bytes),
+            ByteFormat::Kibi => write!(f, "{}K", self.bytes / 1024),
+            ByteFormat::Mebi => write!(f, "{}M", self.bytes / (1024 * 1024)),
+            ByteFormat::Gibi => write!(f, "{}G", self.bytes / (1024 * 1024 * 1024)),
         }
     }
 }
@@ -79,8 +142,7 @@ impl<'de> serde::Deserialize<'de> for ByteUnit {
     where
         D: serde::Deserializer<'de>,
     {
-        let s: &str = serde::Deserialize::deserialize(deserializer)?;
-        Self::from_str(s).map_err(D::Error::custom)
+        deserializer.deserialize_any(ByteUnitVisitor)
     }
 }
 

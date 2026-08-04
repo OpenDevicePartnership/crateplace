@@ -1,4 +1,4 @@
-use crate::config::{ByteUnit, UnitParseError};
+use crate::config::{ByteFormat, ByteUnit, UnitParseError};
 use crate::file_error::FileError;
 use std::str::FromStr;
 use toml_edit::{DocumentMut, Item as TomlItem, Table, Value};
@@ -154,13 +154,13 @@ impl Default for MemoryX {
         Self {
             ram: MemoryXSection {
                 name: "ram".to_string(),
-                origin: ByteUnit::H(0x20000000),
-                length: ByteUnit::K(128),
+                origin: ByteUnit::new(0x20000000, ByteFormat::Hex),
+                length: ByteUnit::new(0x20000, ByteFormat::Kibi),
             },
             flash: MemoryXSection {
                 name: "flash".to_string(),
-                origin: ByteUnit::H(0x00000000),
-                length: ByteUnit::M(1),
+                origin: ByteUnit::new(0, ByteFormat::Hex),
+                length: ByteUnit::new(1024, ByteFormat::Mebi),
             },
             pre: None,
             sections: vec![],
