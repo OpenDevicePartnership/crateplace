@@ -87,7 +87,10 @@ pub fn init_cargo_toml(cargo_toml: &str) -> Result<String, InitError> {
 
     if !build_deps.get("crateplace").is_some() {
         let mut inline = toml_edit::InlineTable::new();
-        inline.insert("path", "../../../crateplace/".into());
+        inline.insert(
+            "git",
+            "https://github.com/OpenDevicePartnership/crateplace.git".into(),
+        );
         build_deps.insert("crateplace", TomlItem::Value(Value::InlineTable(inline)));
     }
 
