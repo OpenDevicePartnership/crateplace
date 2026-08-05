@@ -330,8 +330,8 @@ fn get_memory_x(project_path: &Path) -> Result<MemoryX, CmdInitError> {
 }
 
 fn backup_if_exists(project_path: &Path, file_name: &str) -> Result<(), CmdInitError> {
-    let ignorelist = project_path.join(file_name);
-    if ignorelist.exists() {
+    let file_path = project_path.join(file_name);
+    if file_path.exists() {
         let backup_name = ".bck_".to_string()
             + if file_name.starts_with('.') {
                 file_name.get(1..).unwrap_or(file_name)
@@ -342,7 +342,7 @@ fn backup_if_exists(project_path: &Path, file_name: &str) -> Result<(), CmdInitE
             "{WARN}Warning{WARN:#}: \"{file_name}\" already exists. Creating backup: \"{backup_name}\""
         );
         let out_path = project_path.join(backup_name);
-        std::fs::rename(file_name, &out_path).into_out_result(&out_path)?;
+        std::fs::rename(file_path, &out_path).into_out_result(&out_path)?;
     }
     Ok(())
 }
