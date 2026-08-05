@@ -559,10 +559,10 @@ impl Config {
         if text {
             entry.insert("text", Value::Boolean(Formatted::new(true)));
         }
-        if text {
+        if rodata {
             entry.insert("rodata", Value::Boolean(Formatted::new(true)));
         }
-        if text {
+        if datarel {
             entry.insert("datarel", Value::Boolean(Formatted::new(true)));
         }
         let res = Item::Value(Value::InlineTable(entry));
