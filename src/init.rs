@@ -364,7 +364,7 @@ pub enum MemoryXParseError {
     UnterminatedComment(usize),
     #[error("failed to parse memory sections")]
     FailedToParseMemorySections,
-    #[error("cratePlace does not support section attibutes, example: (rx)")]
+    #[error("crateplace does not support section attibutes, example: (rx)")]
     NoSupportAttr,
     #[error("failed to parse number in section")]
     UnitParseError(

@@ -247,7 +247,7 @@ pub enum ConfigValidationError {
     DoublePrio(String, u32),
     #[error("\"{0}\" was assigned non-existent section: \"{1}\"")]
     NonExistentSection(String, String),
-    #[error("sultiple sections are marked as default")]
+    #[error("multiple sections are marked as default")]
     MultipleDefaults,
     #[error(
         "symbol assigned to emit no sections: {0}, symbol should have at least one of: text, rodata, or reldata set to true"
@@ -572,7 +572,7 @@ impl Config {
                     table.insert(pattern, res);
                 }
                 _ => {
-                    return Err(ConfigModificationError::UnexpectedType("crates"));
+                    return Err(ConfigModificationError::UnexpectedType("symbols"));
                 }
             },
             None => {

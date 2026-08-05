@@ -4,7 +4,7 @@ static TEST_PROGRAM: &str = "#![no_std] pub fn test() {}";
 
 #[derive(thiserror::Error, Debug)]
 pub enum ManglingDetectionError {
-    #[error("failed to find a version o rustc to check")]
+    #[error("failed to find a version of rustc to check")]
     NoRustc,
     #[error("error while calling rustc: {0}")]
     RustcError(std::io::Error),
