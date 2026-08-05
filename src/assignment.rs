@@ -42,7 +42,7 @@ fn try_assign(
         if dep_assignment.priority > priority {
             dep_assignment.name = name;
             dep_assignment.priority = priority;
-            dep_assignment.user_assigned = false;
+            dep_assignment.user_assigned = user_assigned;
         }
     } else {
         crate_dep.assignment = Some(SectionAssignment {
