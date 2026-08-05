@@ -95,6 +95,7 @@ fn generate_symbol_matches(section_name: &str, config: &Config) -> Option<String
             let mut res = String::new();
             if symbol.symbol_types.text {
                 res += &format!("        *(.text.{glob})\n");
+                res += &format!("        *(.text.unlikely.{glob})\n");
             };
             if symbol.symbol_types.rodata {
                 res += &format!("        *(.rodata.{glob})\n");
