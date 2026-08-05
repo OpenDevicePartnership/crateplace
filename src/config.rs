@@ -556,14 +556,14 @@ impl Config {
             "section",
             Value::String(Formatted::new(section.to_string())),
         );
-        if text {
-            entry.insert("text", Value::Boolean(Formatted::new(true)));
+        if !text {
+            entry.insert("text", Value::Boolean(Formatted::new(false)));
         }
-        if rodata {
-            entry.insert("rodata", Value::Boolean(Formatted::new(true)));
+        if !rodata {
+            entry.insert("rodata", Value::Boolean(Formatted::new(false)));
         }
-        if datarel {
-            entry.insert("datarel", Value::Boolean(Formatted::new(true)));
+        if !datarel {
+            entry.insert("datarel", Value::Boolean(Formatted::new(false)));
         }
         let res = Item::Value(Value::InlineTable(entry));
         match toml.get_mut("symbols") {
