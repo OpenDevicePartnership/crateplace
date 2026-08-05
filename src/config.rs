@@ -437,7 +437,7 @@ impl Config {
         } else {
             Err(ConfigModificationError::UnexpectedType("sections"))?
         }
-        fs::write(config_path, toml.to_string().into_bytes()).into_in_result(config_path)?;
+        fs::write(config_path, toml.to_string().into_bytes()).into_out_result(config_path)?;
         Ok(())
     }
 
@@ -488,7 +488,7 @@ impl Config {
                 toml.insert("crates", Item::Table(table));
             }
         };
-        fs::write(config_path, toml.to_string().into_bytes()).into_in_result(config_path)?;
+        fs::write(config_path, toml.to_string().into_bytes()).into_out_result(config_path)?;
         Ok(())
     }
 
@@ -518,7 +518,7 @@ impl Config {
                 ));
             }
         };
-        fs::write(config_path, toml.to_string().into_bytes()).into_in_result(config_path)?;
+        fs::write(config_path, toml.to_string().into_bytes()).into_out_result(config_path)?;
         Ok(())
     }
 
@@ -581,7 +581,7 @@ impl Config {
                 toml.insert("symbols", Item::Table(table));
             }
         };
-        fs::write(config_path, toml.to_string().into_bytes()).into_in_result(config_path)?;
+        fs::write(config_path, toml.to_string().into_bytes()).into_out_result(config_path)?;
         Ok(())
     }
     pub fn remove_symbol(
@@ -612,7 +612,7 @@ impl Config {
                 ));
             }
         };
-        fs::write(config_path, toml.to_string().into_bytes()).into_in_result(config_path)?;
+        fs::write(config_path, toml.to_string().into_bytes()).into_out_result(config_path)?;
         Ok(())
     }
 

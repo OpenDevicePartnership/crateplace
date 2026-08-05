@@ -416,10 +416,10 @@ impl CratePlacer {
             println!("{}", linkerscript);
         } else {
             let output_file = self.get_output_file()?;
-            let mut output = File::create(output_file).into_in_result(output_file)?;
+            let mut output = File::create(output_file).into_out_result(output_file)?;
             output
                 .write_all(linkerscript.as_bytes())
-                .into_in_result(output_file)?;
+                .into_out_result(output_file)?;
         }
         Ok(())
     }
@@ -474,7 +474,7 @@ impl CratePlacer {
         let new_list = IgnoreList::new(&patterns)?;
         new_list
             .to_file(&ignore_list_path)
-            .into_in_result(&ignore_list_path)?;
+            .into_out_result(&ignore_list_path)?;
         self.ignorelist.set(new_list);
         Ok(())
     }

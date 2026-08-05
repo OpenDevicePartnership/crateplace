@@ -368,17 +368,17 @@ fn init(manifest: Option<&Path>) -> Result<(), CmdInitError> {
     let memory_x = get_memory_x(project_path)?;
 
     let mut memory_toml_file =
-        File::create_new(memory_toml.clone()).into_in_result(&memory_toml)?;
+        File::create_new(memory_toml.clone()).into_out_result(&memory_toml)?;
 
     memory_toml_file
         .write_all(generate_memory_toml(&memory_x).as_bytes())
-        .into_in_result(&memory_toml)?;
+        .into_out_result(&memory_toml)?;
 
     let ignorelist_path = project_path.join(DEFAULT_IGNORELIST_NAME);
     backup_if_exists(project_path, DEFAULT_IGNORELIST_NAME)?;
     crateplace::validation::IgnoreList::default()
         .to_file(&ignorelist_path)
-        .into_in_result(&ignorelist_path)?;
+        .into_out_result(&ignorelist_path)?;
 
     let pre_path = project_path.join("pre.x");
     if let Some(pre) = &memory_x.get_pre() {
