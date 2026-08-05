@@ -239,7 +239,7 @@ pub enum ConfigValidationError {
         #[from]
         UnitParseError,
     ),
-    #[error("parse error")]
+    #[error("section has length of zero: \"{0}\"")]
     ZeroSection(String),
     #[error("section overflowed when calculating end position: \"{0}\"")]
     OverFlow(String),

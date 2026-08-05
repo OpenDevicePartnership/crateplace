@@ -173,7 +173,7 @@ enum Remove {
     },
     /// Remove symbol pattern from the config file
     Symbol {
-        /// The crate name
+        /// The symbol glob pattern to remove
         #[arg(short, long)]
         pattern: String,
     },
@@ -186,7 +186,7 @@ enum Command {
         /// Show crates without section assignments
         #[arg(short, long)]
         show_unspecified: bool,
-        /// Expand every occurence of a crates dependencies
+        /// Expand every occurrence of a crate's dependencies
         #[arg(short, long)]
         no_dedupe: bool,
         /// Show a tree from a specific dependency to its dependents
@@ -244,10 +244,10 @@ enum Command {
     Remove(Remove),
     /// Set the origin and length of ram in the config file
     SetRam {
-        /// Flash origin of the ram
+        /// Origin of the ram
         #[arg(short, long)]
         origin: ByteUnit,
-        /// Flash length of the ram
+        /// Length of the ram
         #[arg(short, long)]
         length: ByteUnit,
     },

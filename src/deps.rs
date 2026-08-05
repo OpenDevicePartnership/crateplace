@@ -30,7 +30,7 @@ pub enum DepsError {
     NoDeps,
     #[error("missing root package")]
     Noroot,
-    #[error("missing root package")]
+    #[error("failed to find crate \"{0}\" in dependencies")]
     CrateNotFound(String),
 }
 
