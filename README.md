@@ -79,7 +79,7 @@ The crates section is where crates are assigned to sections.
 Crates are defined like this:
 ```
 [crates]
-<crate-name> = { section = "second_flash", include-dependencies = true }
+<crate-name> = { section = "second_flash", include_dependencies = true }
 ```
 `section` specifies where the crate ends up.
 `include-dependencies` means all dependencies are assigned to the same section as this one.
