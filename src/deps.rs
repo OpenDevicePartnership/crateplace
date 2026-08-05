@@ -29,7 +29,7 @@ pub enum DepsError {
     #[error("no dependencies found")]
     NoDeps,
     #[error("missing root package")]
-    Noroot,
+    NoRoot,
     #[error("failed to find crate \"{0}\" in dependencies")]
     CrateNotFound(String),
 }
@@ -282,7 +282,7 @@ pub fn get_deps(manifest_path: Option<&Path>) -> Result<DepTree, DepsError> {
     let meta = command.exec()?;
     let root = meta
         .root_package()
-        .ok_or(DepsError::Noroot)?
+        .ok_or(DepsError::NoRoot)?
         .id
         .repr
         .clone();

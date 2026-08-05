@@ -85,7 +85,7 @@ pub fn init_cargo_toml(cargo_toml: &str) -> Result<String, InitError> {
         .as_table_mut()
         .ok_or(InitError::DepsNotTableError)?;
 
-    if !build_deps.get("crateplace").is_some() {
+    if build_deps.get("crateplace").is_none() {
         let mut inline = toml_edit::InlineTable::new();
         inline.insert(
             "git",

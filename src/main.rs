@@ -45,12 +45,6 @@ enum CommandlineError {
         #[from]
         CratePlacerError,
     ),
-    #[error("init")]
-    InitError(
-        #[source]
-        #[from]
-        InitError,
-    ),
     #[error("mangling detection")]
     ManglingDetection(
         #[source]
