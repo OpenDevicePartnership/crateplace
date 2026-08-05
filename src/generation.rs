@@ -100,7 +100,7 @@ fn generate_symbol_matches(section_name: &str, config: &Config) -> Option<String
                 res += &format!("        *(.rodata.{glob})\n");
             };
             if symbol.symbol_types.datarel {
-                res += &format!("        *(.data.rel.{glob})\n");
+                res += &format!("        *(.data.rel.ro.{glob})\n");
             };
             res
         })
