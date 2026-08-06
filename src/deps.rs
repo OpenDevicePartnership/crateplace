@@ -155,13 +155,16 @@ impl DepTree {
         node: &'t Crate,
         seen: &mut HashSet<&'t str>,
     ) -> FmtNode<'t> {
-        let deps = (self.no_dedupe | !seen.contains(id)).then_some({
+        let deps = (self.no_dedupe || !seen.contains(id)).then(|| {
             self.get_node_deps(node, id)
                 .iter()
                 .filter_map(|id| Some((id, self.crates.get(*id)?)))
                 .filter_map(|(id, dep)| {
-                    (self.display_unspecified | self.any_deps_assigned_and_unseen(id, seen))
-                        .then_some(self.construct_fmt_node(id, dep, seen))
+                    if self.display_unspecified || self.any_deps_assigned_and_unseen(id, seen) {
+                        Some(self.construct_fmt_node(id, dep, seen))
+                    } else {
+                        None
+                    }
                 })
                 .collect()
         });
@@ -205,7 +208,7 @@ impl DepTree {
             .get(id)
             .map(|node| {
                 node.assignment.is_some()
-                    | self
+                    || self
                         .get_node_deps(node, id)
                         .iter()
                         .any(|id| self.any_deps_assigned_and_unseen(id, seen))
