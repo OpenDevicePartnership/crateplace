@@ -411,7 +411,7 @@ impl Config {
         } else {
             return Err(ConfigModificationError::UnexpectedType("sections"));
         }
-        fs::write(config_path, toml.to_string().into_bytes()).into_in_result(config_path)?;
+        fs::write(config_path, toml.to_string().into_bytes()).into_out_result(config_path)?;
         Ok(())
     }
 
@@ -631,7 +631,7 @@ impl Config {
         entry.insert("origin", Value::String(Formatted::new(origin.to_string())));
         entry.insert("length", Value::String(Formatted::new(length.to_string())));
         toml.insert("ram", Item::Value(Value::InlineTable(entry)));
-        fs::write(config_path, toml.to_string().into_bytes()).into_in_result(config_path)?;
+        fs::write(config_path, toml.to_string().into_bytes()).into_out_result(config_path)?;
         Ok(())
     }
 }
