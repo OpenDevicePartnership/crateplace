@@ -1,0 +1,96 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    name: stable / fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --check
+
+  clippy:
+    name: stable / clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  test:
+    name: ${{ matrix.os }} / test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run tests
+        run: cargo test --locked
+
+  doc:
+    name: stable / doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build documentation
+        run: cargo doc --locked --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  msrv:
+    name: 1.95 / check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+      - name: Check MSRV
+        run: cargo check --locked
+
+  deny:
+    name: stable / deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check advisories, licenses, bans, and sources
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  machete:
+    name: stable / machete
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@cargo-machete
+      - name: Check unused dependencies
+        run: cargo machete
