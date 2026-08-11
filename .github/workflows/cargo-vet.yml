@@ -20,6 +20,10 @@ jobs:
       CARGO_VET_VERSION: 0.10.2
     steps:
       - uses: actions/checkout@v4
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
       - name: Cache cargo-vet
         uses: actions/cache@v4
         with:
