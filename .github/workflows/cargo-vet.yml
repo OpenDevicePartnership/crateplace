@@ -1,0 +1,37 @@
+name: cargo-vet
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  vet:
+    name: vet dependencies
+    runs-on: ubuntu-latest
+    env:
+      CARGO_VET_VERSION: 0.10.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
+      - name: Cache cargo-vet
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.tool_cache }}/cargo-vet
+          key: cargo-vet-${{ env.CARGO_VET_VERSION }}
+      - name: Add cargo-vet to PATH
+        run: echo "${{ runner.tool_cache }}/cargo-vet/bin" >> "$GITHUB_PATH"
+      - name: Install cargo-vet
+        run: cargo install --locked --root "${{ runner.tool_cache }}/cargo-vet" --version "${{ env.CARGO_VET_VERSION }}" cargo-vet
+      - name: Vet dependencies
+        run: cargo vet --locked

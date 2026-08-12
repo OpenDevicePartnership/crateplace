@@ -479,10 +479,8 @@ fn classify_symbols(
                         );
                     }
                 }
-            } else {
-                if let Some(name) = linkage_name.or(name) {
-                    res.insert(name.to_string(), SymbolClass::OtherLang);
-                }
+            } else if let Some(name) = linkage_name.or(name) {
+                res.insert(name.to_string(), SymbolClass::OtherLang);
             }
         }
     }
