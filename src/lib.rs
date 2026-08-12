@@ -329,16 +329,14 @@ impl CratePlacer {
                     path.to_string_lossy().to_string(),
                 ))?
                 .to_owned())
+        } else if let Some(manifest) = &self.manifest
+            && let Some(manifest_dir) = manifest.parent()
+        {
+            Ok(manifest_dir.to_path_buf())
         } else {
-            if let Some(manifest) = &self.manifest
-                && let Some(manifest_dir) = manifest.parent()
-            {
-                Ok(manifest_dir.to_path_buf())
-            } else {
-                Ok(PathBuf::from(
-                    env::var_os("OUT_DIR").ok_or(CratePlacerError::NoOutput)?,
-                ))
-            }
+            Ok(PathBuf::from(
+                env::var_os("OUT_DIR").ok_or(CratePlacerError::NoOutput)?,
+            ))
         }
     }
 
