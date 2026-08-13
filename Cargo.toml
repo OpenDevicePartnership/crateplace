@@ -29,3 +29,8 @@ syn = { version = "3.0.3", features = ["full"] }
 thiserror = "2.0.18"
 toml = "1.1.2"
 toml_edit = "0.25.13"
+
+[package.metadata.cargo-machete]
+# proc-macro2 is a direct dependency only to enable its "span-locations"
+# feature for syn spans; it is not referenced by name in the code.
+ignored = ["proc-macro2"]
