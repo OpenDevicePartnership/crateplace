@@ -93,7 +93,7 @@ pub enum CratePlacerError {
     #[error("project has no output binary")]
     NoOutputBinary,
     #[error("failed to load config")]
-    ConifgLoadError(
+    ConfigLoadError(
         #[source]
         #[from]
         ConfigLoadError,

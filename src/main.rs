@@ -396,9 +396,11 @@ fn init(manifest: Option<&Path>) -> Result<(), CmdInitError> {
         Err(CmdInitError::NoCargoToml)?;
     }
     let cargo_toml_content = std::fs::read_to_string(&cargo_toml).into_in_result(&cargo_toml)?;
+    let updated_cargo_toml = init_cargo_toml(&cargo_toml_content)?;
+    backup_if_exists(project_path, "Cargo.toml")?;
     let mut cargo_toml_file = File::create(&cargo_toml).into_out_result(&cargo_toml)?;
     cargo_toml_file
-        .write_all(init_cargo_toml(&cargo_toml_content)?.as_bytes())
+        .write_all(updated_cargo_toml.as_bytes())
         .into_out_result(&cargo_toml)?;
 
     let build_rs_path = project_path.join("build.rs");

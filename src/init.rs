@@ -364,7 +364,7 @@ pub enum MemoryXParseError {
     UnterminatedComment(usize),
     #[error("failed to parse memory sections")]
     FailedToParseMemorySections,
-    #[error("crateplace does not support section attibutes, example: (rx)")]
+    #[error("crateplace does not support section attributes, example: (rx)")]
     NoSupportAttr,
     #[error("failed to parse number in section")]
     UnitParseError(
@@ -407,7 +407,7 @@ fn parse_memory_content(text: &str) -> Result<Vec<MemoryXSection>, MemoryXParseE
             Err(MemoryXParseError::Expected("\"ORIGIN\" after \":\""))?
         }
         if content.next() != Some("=") {
-            Err(MemoryXParseError::Expected("\"= after \"ORIGIN\""))?
+            Err(MemoryXParseError::Expected("\"=\" after \"ORIGIN\""))?
         }
         let origin = ByteUnit::from_str(
             content
