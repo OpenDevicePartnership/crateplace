@@ -665,3 +665,88 @@ pub enum ConfigModificationError {
     #[error("unexpected type: {0}")]
     UnexpectedType(&'static str),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn byte_units_parse_to_bytes() {
+        let cases = [
+            ("0x1000", 4096),
+            ("0Xff", 255),
+            ("512", 512),
+            ("2K", 2 * 1024),
+            ("3M", 3 * 1024 * 1024),
+            ("4G", 4 * 1024 * 1024 * 1024),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(ByteUnit::from_str(input).unwrap().as_bytes(), expected);
+        }
+    }
+
+    #[test]
+    fn byte_units_reject_invalid_values() {
+        for input in ["", "0x", "K", "12k", "-1", "1.5M"] {
+            assert!(ByteUnit::from_str(input).is_err(), "accepted {input:?}");
+        }
+    }
+
+    #[test]
+    fn adjacent_ranges_do_not_overlap() {
+        let mut checker = ConfigChecker::new();
+
+        checker
+            .check("first".into(), 0x1000, 0x100, Some(1))
+            .unwrap();
+        checker
+            .check("second".into(), 0x1100, 0x100, Some(2))
+            .unwrap();
+    }
+
+    #[test]
+    fn overlapping_ranges_are_rejected() {
+        let mut checker = ConfigChecker::new();
+        checker
+            .check("first".into(), 0x1000, 0x100, Some(1))
+            .unwrap();
+
+        let error = checker
+            .check("second".into(), 0x1080, 0x100, Some(2))
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ConfigValidationError::Overlap(name, occupied)
+                if name == "second" && occupied == "first"
+        ));
+    }
+
+    #[test]
+    fn invalid_range_lengths_are_rejected() {
+        let mut checker = ConfigChecker::new();
+
+        assert!(matches!(
+            checker.check("empty".into(), 0x1000, 0, None),
+            Err(ConfigValidationError::ZeroSection(name)) if name == "empty"
+        ));
+        assert!(matches!(
+            checker.check("overflow".into(), u64::MAX, 1, None),
+            Err(ConfigValidationError::OverFlow(name)) if name == "overflow"
+        ));
+    }
+
+    #[test]
+    fn duplicate_priorities_are_rejected() {
+        let mut checker = ConfigChecker::new();
+        checker
+            .check("first".into(), 0x1000, 0x100, Some(7))
+            .unwrap();
+
+        assert!(matches!(
+            checker.check("second".into(), 0x2000, 0x100, Some(7)),
+            Err(ConfigValidationError::DoublePrio(name, 7)) if name == "second"
+        ));
+    }
+}
