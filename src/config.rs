@@ -677,8 +677,11 @@ mod tests {
             ("0Xff", 255),
             ("512", 512),
             ("2K", 2 * 1024),
+            ("2k", 2 * 1024),
             ("3M", 3 * 1024 * 1024),
+            ("3m", 3 * 1024 * 1024),
             ("4G", 4 * 1024 * 1024 * 1024),
+            ("4g", 4 * 1024 * 1024 * 1024),
         ];
 
         for (input, expected) in cases {
@@ -688,7 +691,7 @@ mod tests {
 
     #[test]
     fn byte_units_reject_invalid_values() {
-        for input in ["", "0x", "K", "12k", "-1", "1.5M"] {
+        for input in ["", "0x", "K", "-1", "1.5M"] {
             assert!(ByteUnit::from_str(input).is_err(), "accepted {input:?}");
         }
     }
