@@ -8,15 +8,16 @@ pub mod mangling;
 pub mod validation;
 use crate::{
     assignment::{AssignmentError, assign},
-    config::{Config, ConfigLoadError, ConfigValidationError},
+    config::{ByteUnit, Config, ConfigLoadError, ConfigModificationError, ConfigValidationError},
     deps::{DepTree, Inverted},
     file_error::{FileError, IOToFileResult},
     mangling::{ManglingDetectionError, ManglingVersion, rustc_mangling_version},
     validation::{IgnoreList, ValidationError, ValidationProblem},
 };
 
-use anstream::println;
+use anstream::{eprint, eprintln, println};
 use cargo_metadata::Message;
+use clap::builder::styling::{AnsiColor, Color, Style};
 use deps::{DepsError, get_deps};
 use std::{
     env,
@@ -29,20 +30,20 @@ use std::{
 
 pub use generation::ManglingMatches;
 
-const DEFAULT_CONFIG_NAME: &str = "Memory.toml";
-const DEFAULT_OUTPUT_NAME: &str = "memory.x";
-const DEFAULT_IGNORELIST_NAME: &str = ".crateplace-ignore";
+pub const DEFAULT_CONFIG_NAME: &str = "Memory.toml";
+pub const DEFAULT_OUTPUT_NAME: &str = "memory.x";
+pub const DEFAULT_IGNORELIST_NAME: &str = ".crateplace-ignore";
 const CARGO_MANIFEST: &str = "Cargo.toml";
 
 #[derive(thiserror::Error, Debug)]
 pub enum CratePlacerError {
-    #[error("Failed to retrieve dependencies")]
+    #[error("failed to retrieve dependencies")]
     Deps(
         #[source]
         #[from]
         DepsError,
     ),
-    #[error("Failed to parse toml")]
+    #[error("failed to parse toml")]
     TomlParse(
         #[source]
         #[from]
@@ -54,63 +55,71 @@ pub enum CratePlacerError {
         err: std::io::Error,
         path: String,
     },
-    #[error("Failed to assign sections to crates")]
+    #[error("failed to assign sections to crates")]
     Placement(
         #[source]
         #[from]
         AssignmentError,
     ),
-    #[error("Output path had no parent: {0}")]
+    #[error("output path had no parent: {0}")]
     InvalidPath(String),
-    #[error("Failed to find {0}")]
+    #[error("failed to find {0}")]
     FailedToFindConfig(String),
-    #[error("Failed to find Cargo.toml")]
+    #[error("failed to find Cargo.toml")]
     NoOutput,
-    #[error("Failed to find crate: {0}")]
+    #[error("failed to find crate: {0}")]
     DepNotFound(String),
-    #[error("Invalid configuration")]
+    #[error("invalid configuration")]
     InvalidConfig(
         #[source]
         #[from]
         ConfigValidationError,
     ),
-    #[error("Failed to detect mangling version")]
+    #[error("failed to detect mangling version")]
     ManglingDetectionError(
         #[source]
         #[from]
         ManglingDetectionError,
     ),
 
-    #[error("Validation")]
+    #[error("validation")]
     ValidationError(
         #[source]
         #[from]
         ValidationError,
     ),
-    #[error("Build error")]
+    #[error("build")]
     BuildError,
-    #[error("Project has no output binary")]
+    #[error("project has no output binary")]
     NoOutputBinary,
-    #[error("Failed to load config")]
-    ConifgLoadError(
+    #[error("failed to load config")]
+    ConfigLoadError(
         #[source]
         #[from]
         ConfigLoadError,
     ),
-    #[error("File error")]
+    #[error("file error")]
     FileError(
         #[source]
         #[from]
         FileError,
     ),
+    #[error("config modification")]
+    ConfigModificationError(
+        #[source]
+        #[from]
+        ConfigModificationError,
+    ),
 }
 
 pub fn report(mut err: &dyn Error) {
-    eprint!("{err}");
+    let error = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Red)));
+    eprint!("{error}{err}{error:#}");
     while let Some(source) = err.source() {
         eprint!(": {source}");
         err = source;
     }
+    eprintln!();
 }
 
 fn divine_mangling() -> Result<ManglingVersion, CratePlacerError> {
@@ -194,6 +203,17 @@ where
             .as_ref()
             .ok_or_else(|| CratePlacerError::FailedToFindConfig(self.default_file_name.to_string()))
     }
+
+    fn get_mut(&mut self, manifest_dir: Option<&Path>) -> Result<&mut Config, CratePlacerError> {
+        if self.config.is_none() {
+            let path = self.get_path(manifest_dir)?;
+            let config = Config::from_file(path)?;
+            self.config = Some(config);
+        }
+        self.config
+            .as_mut()
+            .ok_or_else(|| CratePlacerError::FailedToFindConfig(self.default_file_name.to_string()))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -213,7 +233,7 @@ impl Default for CratePlacer {
     }
 }
 
-pub(crate) fn look_up(filename: &Path) -> Option<PathBuf> {
+pub fn look_up(filename: &Path) -> Option<PathBuf> {
     let curdir = env::current_dir().ok()?;
     let mut dir = curdir.as_path();
     loop {
@@ -394,10 +414,10 @@ impl CratePlacer {
             println!("{}", linkerscript);
         } else {
             let output_file = self.get_output_file()?;
-            let mut output = File::create(output_file).file_out_result(output_file)?;
+            let mut output = File::create(output_file).into_out_result(output_file)?;
             output
                 .write_all(linkerscript.as_bytes())
-                .file_out_result(output_file)?;
+                .into_out_result(output_file)?;
         }
         Ok(())
     }
@@ -452,7 +472,7 @@ impl CratePlacer {
         let new_list = IgnoreList::new(&patterns)?;
         new_list
             .to_file(&ignore_list_path)
-            .file_out_result(&ignore_list_path)?;
+            .into_out_result(&ignore_list_path)?;
         self.ignorelist.set(new_list);
         Ok(())
     }
@@ -510,5 +530,72 @@ impl CratePlacer {
             Err(_) => return Err(CratePlacerError::BuildError),
         };
         self.validate(Path::new(&output.ok_or(CratePlacerError::NoOutputBinary)?))
+    }
+
+    fn modify_config(&mut self) -> Result<(&mut Config, PathBuf), CratePlacerError> {
+        let manifest_dir = get_manifest_dir(&mut self.manifest);
+        let config_path = self.config.get_path(manifest_dir)?.to_path_buf();
+        Ok((self.config.get_mut(manifest_dir)?, config_path))
+    }
+
+    pub fn add_section(
+        &mut self,
+        name: &str,
+        origin: ByteUnit,
+        length: ByteUnit,
+        priority: u32,
+        default: bool,
+    ) -> Result<(), CratePlacerError> {
+        let (config, config_path) = self.modify_config()?;
+        Ok(config.add_section(&config_path, name, origin, length, priority, default)?)
+    }
+
+    pub fn add_crate(
+        &mut self,
+        name: &str,
+        section: &str,
+        include_dependencies: bool,
+    ) -> Result<(), CratePlacerError> {
+        let (config, config_path) = self.modify_config()?;
+        Ok(config.add_crate(&config_path, name, section, include_dependencies)?)
+    }
+
+    pub fn add_symbol(
+        &mut self,
+        pattern: &str,
+        section: &str,
+        text: bool,
+        rodata: bool,
+        datarel: bool,
+    ) -> Result<(), CratePlacerError> {
+        let (config, config_path) = self.modify_config()?;
+        Ok(config.add_symbol(&config_path, pattern, section, text, rodata, datarel)?)
+    }
+
+    pub fn remove_section(&mut self, name: &str) -> Result<(), CratePlacerError> {
+        let (config, path) = self.modify_config()?;
+        Ok(config.remove_section(&path, name)?)
+    }
+
+    pub fn remove_crate(&mut self, name: &str) -> Result<(), CratePlacerError> {
+        let (config, path) = self.modify_config()?;
+        Ok(config.remove_crate(&path, name)?)
+    }
+
+    pub fn remove_symbol(&mut self, pattern: &str) -> Result<(), CratePlacerError> {
+        let (config, path) = self.modify_config()?;
+        Ok(config.remove_symbol(&path, pattern)?)
+    }
+
+    pub fn set_ram(&mut self, origin: ByteUnit, length: ByteUnit) -> Result<(), CratePlacerError> {
+        let (config, path) = self.modify_config()?;
+        Ok(config.set_ram(&path, origin, length)?)
+    }
+
+    pub fn validate_config(&mut self) -> Result<(), CratePlacerError> {
+        Ok(self
+            .config
+            .get(get_manifest_dir(&mut self.manifest))?
+            .validate()?)
     }
 }

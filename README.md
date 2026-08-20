@@ -50,7 +50,7 @@ fn main() {
     }
 }
 ```
-The buildscript now automatically generates the the `memory.x` file and places it in the crates output directory.
+The buildscript now automatically generates the `memory.x` file and places it in the crates output directory.
 The file will be automatically included during the build process.
 
 
@@ -66,7 +66,7 @@ ram = { origin = "0x20000000", length = "128K" }
 The definition of flash sections.
 Symbols and crates can be assigned to these sections.
 They are defined by an `origin` and `length` just like ram.
-Additionally they must be assigned a `piority`.
+Additionally they must be assigned a "piority".
 The lowest priority will be assigned when a dependency is shared by two assigned crates.
 Then there is the `default` option which is where all unspecified crates will end up if a section is marked with `default=true`.
 ```
@@ -79,7 +79,7 @@ The crates section is where crates are assigned to sections.
 Crates are defined like this:
 ```
 [crates]
-<crate-name> = { section = "second_flash", include-dependencies = true }
+<crate-name> = { section = "second_flash", include_dependencies = true }
 ```
 `section` specifies where the crate ends up.
 `include-dependencies` means all dependencies are assigned to the same section as this one.
@@ -96,4 +96,4 @@ Glob patterns can be used so any symbol starting with `library-name` can be caug
 These patterns will override the crates section and will include symbols linked in from multiple languages.
 The section is designated just like crates with `section`.
 By default crateplace will include the `text`, `rodata` and the `data.rel` sections.
-These can be disabled induvidually with the `rodata`, `datarel` and the `text` booleans per symbol.
+These can be disabled individually with the `rodata`, `datarel` and the `text` booleans per symbol.

@@ -1,8 +1,10 @@
 use serde::Serialize;
-use serde::de::Error as DeSerializationError;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::num::ParseIntError;
+use std::path::Path;
 use std::str::FromStr;
+use toml_edit::{DocumentMut, Formatted, InlineTable, Item, Table, TomlError, Value};
 
 use crate::FileConfigData;
 use crate::file_error::{FileError, IOToFileResult};
@@ -12,62 +14,125 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum ByteUnit {
-    H(u64),
-    B(u64),
-    K(u64),
-    M(u64),
-    G(u64),
+pub struct ByteUnit {
+    bytes: u64,
+    format: ByteFormat,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ByteFormat {
+    Hex,
+    Bytes,
+    Kibi,
+    Mebi,
+    Gibi,
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
-#[error("Failed to parse byte unit: {0}")]
-pub struct UnitParseError(String);
+pub enum UnitParseError {
+    #[error("overflowed while converting: {0}, the number is too big")]
+    OverFlow(String),
+    #[error("failed to parse number: {0}")]
+    Parsing(String, #[source] ParseIntError),
+}
 
 impl FromStr for ByteUnit {
     type Err = UnitParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-            return Ok(ByteUnit::H(
-                u64::from_str_radix(hex, 16).map_err(|_| UnitParseError(s.to_owned()))?,
-            ));
+            return Ok(ByteUnit {
+                bytes: u64::from_str_radix(hex, 16)
+                    .map_err(|err| UnitParseError::Parsing(s.to_owned(), err))?,
+                format: ByteFormat::Hex,
+            });
         }
-        Ok(match s.chars().last() {
-            Some('K') => ByteUnit::K(
-                u64::from_str(&s[..s.len() - 1]).map_err(|_| UnitParseError(s.to_string()))?,
-            ),
-            Some('M') => ByteUnit::M(
-                u64::from_str(&s[..s.len() - 1]).map_err(|_| UnitParseError(s.to_string()))?,
-            ),
-            Some('G') => ByteUnit::G(
-                u64::from_str(&s[..s.len() - 1]).map_err(|_| UnitParseError(s.to_string()))?,
-            ),
-            _ => ByteUnit::B(u64::from_str(s).map_err(|_| UnitParseError(s.to_string()))?),
+        Ok(match s.chars().last().map(|c| c.to_ascii_uppercase()) {
+            Some('K') => ByteUnit {
+                bytes: u64::from_str(&s[..s.len() - 1])
+                    .map_err(|err| UnitParseError::Parsing(s.to_string(), err))?
+                    .checked_mul(1024)
+                    .ok_or_else(|| UnitParseError::OverFlow(s.to_string()))?,
+                format: ByteFormat::Kibi,
+            },
+            Some('M') => ByteUnit {
+                bytes: u64::from_str(&s[..s.len() - 1])
+                    .map_err(|err| UnitParseError::Parsing(s.to_string(), err))?
+                    .checked_mul(1024 * 1024)
+                    .ok_or_else(|| UnitParseError::OverFlow(s.to_string()))?,
+                format: ByteFormat::Mebi,
+            },
+            Some('G') => ByteUnit {
+                bytes: u64::from_str(&s[..s.len() - 1])
+                    .map_err(|err| UnitParseError::Parsing(s.to_string(), err))?
+                    .checked_mul(1024 * 1024 * 1024)
+                    .ok_or_else(|| UnitParseError::OverFlow(s.to_string()))?,
+                format: ByteFormat::Gibi,
+            },
+            _ => ByteUnit {
+                bytes: u64::from_str(s)
+                    .map_err(|err| UnitParseError::Parsing(s.to_string(), err))?,
+                format: ByteFormat::Bytes,
+            },
         })
     }
 }
 
 impl ByteUnit {
+    pub fn new(bytes: u64, format: ByteFormat) -> Self {
+        Self { bytes, format }
+    }
+
     pub fn as_bytes(&self) -> u64 {
-        match self {
-            ByteUnit::H(value) => *value,
-            ByteUnit::B(value) => *value,
-            ByteUnit::K(value) => value * 1024,
-            ByteUnit::M(value) => value * 1024 * 1024,
-            ByteUnit::G(value) => value * 1024 * 1024 * 1024,
-        }
+        self.bytes
+    }
+}
+
+struct ByteUnitVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ByteUnitVisitor {
+    type Value = ByteUnit;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a byte size or length: an integer, or a string like \"512K\" / \"0x1000\"")
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        ByteUnit::from_str(v).map_err(E::custom)
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(ByteUnit {
+            bytes: u64::try_from(v).map_err(|_| E::custom("byte unit cannot be negative"))?,
+            format: ByteFormat::Bytes,
+        })
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(ByteUnit {
+            bytes: v,
+            format: ByteFormat::Bytes,
+        })
     }
 }
 
 impl std::fmt::Display for ByteUnit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ByteUnit::H(value) => write!(f, "{value:02X}"),
-            ByteUnit::B(value) => write!(f, "{value}"),
-            ByteUnit::K(value) => write!(f, "{value}K"),
-            ByteUnit::M(value) => write!(f, "{value}M"),
-            ByteUnit::G(value) => write!(f, "{value}G"),
+        match self.format {
+            ByteFormat::Hex => write!(f, "0x{:02X}", self.bytes),
+            ByteFormat::Bytes => write!(f, "{}", self.bytes),
+            ByteFormat::Kibi => write!(f, "{}K", self.bytes / 1024),
+            ByteFormat::Mebi => write!(f, "{}M", self.bytes / (1024 * 1024)),
+            ByteFormat::Gibi => write!(f, "{}G", self.bytes / (1024 * 1024 * 1024)),
         }
     }
 }
@@ -77,8 +142,7 @@ impl<'de> serde::Deserialize<'de> for ByteUnit {
     where
         D: serde::Deserializer<'de>,
     {
-        let s: &str = serde::Deserialize::deserialize(deserializer)?;
-        Self::from_str(s).map_err(D::Error::custom)
+        deserializer.deserialize_any(ByteUnitVisitor)
     }
 }
 
@@ -141,13 +205,13 @@ pub struct Config {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigLoadError {
-    #[error("Toml parse error")]
+    #[error("toml parsing")]
     TomlParseError(
         #[source]
         #[from]
         toml::de::Error,
     ),
-    #[error("File error")]
+    #[error("file error")]
     FileError(
         #[source]
         #[from]
@@ -158,35 +222,35 @@ pub enum ConfigLoadError {
 impl FileConfigData for Config {
     type Error = ConfigLoadError;
 
-    fn from_file(path: &std::path::Path) -> Result<Self, Self::Error> {
+    fn from_file(path: &Path) -> Result<Self, Self::Error> {
         Ok(toml::from_str(
-            &fs::read_to_string(path).file_in_result(path)?,
+            &fs::read_to_string(path).into_in_result(path)?,
         )?)
     }
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ConfigValidationError {
-    #[error("Section \"{1}\" overlaps with \"{0}\"")]
+    #[error("section \"{1}\" overlaps with \"{0}\"")]
     Overlap(String, String),
-    #[error("Failed to parse \"{0}\" as a memory offset")]
+    #[error("failed to parse \"{0}\" as a memory offset")]
     ParseError(
         #[source]
         #[from]
         UnitParseError,
     ),
-    #[error("Parse error")]
+    #[error("section has length of zero: \"{0}\"")]
     ZeroSection(String),
-    #[error("Section overflowed when calculating end position: \"{0}\"")]
+    #[error("section overflowed when calculating end position: \"{0}\"")]
     OverFlow(String),
-    #[error("Section has a priority which was already used: \"{0}\" with priority: {1}")]
+    #[error("section has a priority which was already used: \"{0}\" with priority: {1}")]
     DoublePrio(String, u32),
     #[error("\"{0}\" was assigned non-existent section: \"{1}\"")]
     NonExistentSection(String, String),
-    #[error("Multiple sections are marked as default")]
+    #[error("multiple sections are marked as default")]
     MultipleDefaults,
     #[error(
-        "Symbol assigned to emit no sections: {0}, symbol should have at least one of: text, rodata, or reldata set to true"
+        "symbol assigned to emit no sections: {0}, symbol should have at least one of: text, rodata, or reldata set to true"
     )]
     SymbolWithoutSections(String),
 }
@@ -306,4 +370,298 @@ impl Config {
         }
         Ok(())
     }
+
+    pub fn add_section(
+        &mut self,
+        config_path: &Path,
+        name: &str,
+        origin: ByteUnit,
+        length: ByteUnit,
+        priority: u32,
+        default: bool,
+    ) -> Result<(), ConfigModificationError> {
+        if self.sections.contains_key(name) {
+            return Err(ConfigModificationError::NameExists(name.to_string()));
+        }
+        self.sections.insert(
+            name.to_string(),
+            Section {
+                origin,
+                length,
+                priority,
+                default,
+            },
+        );
+        self.validate()?;
+        let mut toml: DocumentMut = fs::read_to_string(config_path)
+            .into_in_result(config_path)?
+            .parse()?;
+        if let Item::Table(table) = toml
+            .get_mut("sections")
+            .ok_or(ConfigModificationError::FailedToFind("sections"))?
+        {
+            let mut entry = InlineTable::new();
+            entry.insert("origin", Value::String(Formatted::new(origin.to_string())));
+            entry.insert("length", Value::String(Formatted::new(length.to_string())));
+            entry.insert("priority", Value::Integer(Formatted::new(priority.into())));
+            if default {
+                entry.insert("default", Value::Boolean(Formatted::new(true)));
+            }
+            table.insert(name, Item::Value(Value::InlineTable(entry)));
+        } else {
+            return Err(ConfigModificationError::UnexpectedType("sections"));
+        }
+        fs::write(config_path, toml.to_string().into_bytes()).into_out_result(config_path)?;
+        Ok(())
+    }
+
+    pub fn remove_section(
+        &mut self,
+        config_path: &Path,
+        name: &str,
+    ) -> Result<(), ConfigModificationError> {
+        self.sections
+            .remove(name)
+            .ok_or_else(|| ConfigModificationError::NameDoesNotExist(name.to_string()))?;
+        self.validate()?;
+        let mut toml: DocumentMut = fs::read_to_string(config_path)
+            .into_in_result(config_path)?
+            .parse()?;
+        if let Item::Table(table) = toml
+            .get_mut("sections")
+            .ok_or(ConfigModificationError::FailedToFind("sections"))?
+        {
+            table
+                .remove(name)
+                .ok_or_else(|| ConfigModificationError::NameDoesNotExist(name.to_string()))?;
+        } else {
+            Err(ConfigModificationError::UnexpectedType("sections"))?
+        }
+        fs::write(config_path, toml.to_string().into_bytes()).into_out_result(config_path)?;
+        Ok(())
+    }
+
+    pub fn add_crate(
+        &mut self,
+        config_path: &Path,
+        name: &str,
+        section: &str,
+        include_dependencies: bool,
+    ) -> Result<(), ConfigModificationError> {
+        let crates = self.crates.get_or_insert_default();
+        if crates.contains_key(name) {
+            return Err(ConfigModificationError::NameExists(name.to_string()));
+        }
+        crates.insert(
+            name.to_string(),
+            CratePlacement {
+                section: section.to_string(),
+                include_dependencies,
+            },
+        );
+        self.validate()?;
+        let mut toml: DocumentMut = fs::read_to_string(config_path)
+            .into_in_result(config_path)?
+            .parse()?;
+
+        let mut entry = InlineTable::new();
+        entry.insert(
+            "section",
+            Value::String(Formatted::new(section.to_string())),
+        );
+        if include_dependencies {
+            entry.insert("include_dependencies", Value::Boolean(Formatted::new(true)));
+        }
+        let res = Item::Value(Value::InlineTable(entry));
+        match toml.get_mut("crates") {
+            Some(element) => match element {
+                Item::Table(table) => {
+                    table.insert(name, res);
+                }
+                _ => {
+                    return Err(ConfigModificationError::UnexpectedType("crates"));
+                }
+            },
+            None => {
+                let mut table = Table::new();
+                table.insert(name, res);
+                toml.insert("crates", Item::Table(table));
+            }
+        };
+        fs::write(config_path, toml.to_string().into_bytes()).into_out_result(config_path)?;
+        Ok(())
+    }
+
+    pub fn remove_crate(
+        &mut self,
+        config_path: &Path,
+        name: &str,
+    ) -> Result<(), ConfigModificationError> {
+        let crates = self.crates.get_or_insert_default();
+        if crates.remove(name).is_none() {
+            return Err(ConfigModificationError::NameDoesNotExist(name.to_string()));
+        }
+        self.validate()?;
+        let mut toml: DocumentMut = fs::read_to_string(config_path)
+            .into_in_result(config_path)?
+            .parse()?;
+        match toml.get_mut("crates") {
+            Some(table) => match table {
+                Item::Table(table) => table
+                    .remove(name)
+                    .ok_or_else(|| ConfigModificationError::NameDoesNotExist(name.to_string()))?,
+                _ => return Err(ConfigModificationError::UnexpectedType("crates")),
+            },
+            None => {
+                return Err(ConfigModificationError::NameDoesNotExist(
+                    "crates".to_string(),
+                ));
+            }
+        };
+        fs::write(config_path, toml.to_string().into_bytes()).into_out_result(config_path)?;
+        Ok(())
+    }
+
+    pub fn add_symbol(
+        &mut self,
+        config_path: &Path,
+        pattern: &str,
+        section: &str,
+        text: bool,
+        rodata: bool,
+        datarel: bool,
+    ) -> Result<(), ConfigModificationError> {
+        let symbols = self.symbols.get_or_insert_default();
+        if symbols.contains_key(pattern) {
+            return Err(ConfigModificationError::NameExists(pattern.to_string()));
+        }
+        symbols.insert(
+            pattern.to_string(),
+            SymPlacement {
+                section: section.to_string(),
+                symbol_types: SymbolTypes {
+                    text,
+                    rodata,
+                    datarel,
+                },
+            },
+        );
+        self.validate()?;
+
+        let mut toml: DocumentMut = fs::read_to_string(config_path)
+            .into_in_result(config_path)?
+            .parse()?;
+        let mut entry = InlineTable::new();
+        entry.insert(
+            "section",
+            Value::String(Formatted::new(section.to_string())),
+        );
+        if !text {
+            entry.insert("text", Value::Boolean(Formatted::new(false)));
+        }
+        if !rodata {
+            entry.insert("rodata", Value::Boolean(Formatted::new(false)));
+        }
+        if !datarel {
+            entry.insert("datarel", Value::Boolean(Formatted::new(false)));
+        }
+        let res = Item::Value(Value::InlineTable(entry));
+        match toml.get_mut("symbols") {
+            Some(element) => match element {
+                Item::Table(table) => {
+                    table.insert(pattern, res);
+                }
+                _ => {
+                    return Err(ConfigModificationError::UnexpectedType("symbols"));
+                }
+            },
+            None => {
+                let mut table = Table::new();
+                table.insert(pattern, res);
+                toml.insert("symbols", Item::Table(table));
+            }
+        };
+        fs::write(config_path, toml.to_string().into_bytes()).into_out_result(config_path)?;
+        Ok(())
+    }
+    pub fn remove_symbol(
+        &mut self,
+        config_path: &Path,
+        pattern: &str,
+    ) -> Result<(), ConfigModificationError> {
+        let symbols = self.symbols.get_or_insert_default();
+        if symbols.remove(pattern).is_none() {
+            return Err(ConfigModificationError::NameDoesNotExist(
+                pattern.to_string(),
+            ));
+        }
+        self.validate()?;
+        let mut toml: DocumentMut = fs::read_to_string(config_path)
+            .into_in_result(config_path)?
+            .parse()?;
+        match toml.get_mut("symbols") {
+            Some(table) => match table {
+                Item::Table(table) => table.remove(pattern).ok_or_else(|| {
+                    ConfigModificationError::NameDoesNotExist(pattern.to_string())
+                })?,
+                _ => return Err(ConfigModificationError::UnexpectedType("symbols")),
+            },
+            None => {
+                return Err(ConfigModificationError::NameDoesNotExist(
+                    "symbols".to_string(),
+                ));
+            }
+        };
+        fs::write(config_path, toml.to_string().into_bytes()).into_out_result(config_path)?;
+        Ok(())
+    }
+
+    pub fn set_ram(
+        &mut self,
+        config_path: &Path,
+        origin: ByteUnit,
+        length: ByteUnit,
+    ) -> Result<(), ConfigModificationError> {
+        self.ram = Ram { origin, length };
+        self.validate()?;
+        let mut toml: DocumentMut = fs::read_to_string(config_path)
+            .into_in_result(config_path)?
+            .parse()?;
+        let mut entry = InlineTable::new();
+        entry.insert("origin", Value::String(Formatted::new(origin.to_string())));
+        entry.insert("length", Value::String(Formatted::new(length.to_string())));
+        toml.insert("ram", Item::Value(Value::InlineTable(entry)));
+        fs::write(config_path, toml.to_string().into_bytes()).into_out_result(config_path)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigModificationError {
+    #[error("name already exists: {0}")]
+    NameExists(String),
+    #[error("name does not exist: {0}")]
+    NameDoesNotExist(String),
+    #[error("validation")]
+    Validation(
+        #[source]
+        #[from]
+        ConfigValidationError,
+    ),
+    #[error("file error: {0}")]
+    FileError(
+        #[source]
+        #[from]
+        FileError,
+    ),
+    #[error("toml error: {0}")]
+    TomlError(
+        #[source]
+        #[from]
+        TomlError,
+    ),
+    #[error("failed to find: {0}")]
+    FailedToFind(&'static str),
+    #[error("unexpected type: {0}")]
+    UnexpectedType(&'static str),
 }

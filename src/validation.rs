@@ -26,7 +26,7 @@ pub enum ProblemLevel {
 #[derive(Debug, thiserror::Error)]
 pub enum ValidationProblem {
     #[error(
-        "Symbol too big: \"{name}\"start: {symbol_start:02x}, end: {symbol_end:02x}, section: \"{section_name}\" end: {section_end:02x}"
+        "symbol too big: \"{name}\"start: {symbol_start:02x}, end: {symbol_end:02x}, section: \"{section_name}\" end: {section_end:02x}"
     )]
     SymbolTooBig {
         name: String,
@@ -36,7 +36,7 @@ pub enum ValidationProblem {
         section_end: u64,
     },
     #[error(
-        "Symbol placed incorrectly: \"{name}\" position: {symbol_position:02x}, section \"{section_name}\" start: {section_start:02x} end: {section_end:02x}"
+        "symbol placed incorrectly: \"{name}\" position: {symbol_position:02x}, section \"{section_name}\" start: {section_start:02x} end: {section_end:02x}"
     )]
     SymbolPlacement {
         name: String,
@@ -46,7 +46,7 @@ pub enum ValidationProblem {
         section_end: u64,
     },
     #[error(
-        "Symbol placed incorrectly: \"{name}\", belonging to {owner} section: \"{correct_section}\", actual section: \"{actual_section}\""
+        "symbol placed incorrectly: \"{name}\", belonging to {owner} section: \"{correct_section}\", actual section: \"{actual_section}\""
     )]
     SymbolAssignment {
         name: String,
@@ -54,31 +54,31 @@ pub enum ValidationProblem {
         correct_section: String,
         actual_section: String,
     },
-    #[error("Unknown mangling scheme: \"{name}, mangled: \"{mangled_name}\"")]
+    #[error("unknown mangling scheme: \"{name}, mangled: \"{mangled_name}\"")]
     UnknownManglingScheme { name: String, mangled_name: String },
-    #[error("Failed to identify crate of: \"{name}\"")]
+    #[error("failed to identify crate of: \"{name}\"")]
     NoCrateName { name: String },
-    #[error("Failed to classify symbol: \"{name}\"")]
+    #[error("failed to classify symbol: \"{name}\"")]
     ClassificationFailure { name: String },
-    #[error("Symbol \"{name}\" owned by non-existent crate: \"{crate_name}\"")]
+    #[error("symbol \"{name}\" owned by non-existent crate: \"{crate_name}\"")]
     NonExistentCrate { name: String, crate_name: String },
-    #[error("Crate \"{crate_name}\" assigned to non-existent section: \"{section}\"")]
+    #[error("crate \"{crate_name}\" assigned to non-existent section: \"{section}\"")]
     NonExistentSectionCrate { crate_name: String, section: String },
-    #[error("Symbol \"{symbol}\" assigned to non-existent section: \"{section}\"")]
+    #[error("symbol \"{symbol}\" assigned to non-existent section: \"{section}\"")]
     NonExistentSection { symbol: String, section: String },
-    #[error("Glob pattern is invalid: \"{pattern}\"")]
+    #[error("glob pattern is invalid: \"{pattern}\"")]
     InvalidGlobPattern {
         pattern: String,
         #[source]
         error: glob::PatternError,
     },
-    #[error("Overflow computing section end: {section} start: {start:02x} length: {length:02x}")]
+    #[error("overflow computing section end: {section} start: {start:02x} length: {length:02x}")]
     SectionOverflow {
         section: String,
         start: u64,
         length: u64,
     },
-    #[error("Overflow computing symbol end: {symbol} start: {start:02x} length: {length:02x}")]
+    #[error("overflow computing symbol end: {symbol} start: {start:02x} length: {length:02x}")]
     SymbolOverflow {
         symbol: String,
         start: u64,
@@ -154,9 +154,9 @@ impl IgnoreList {
     }
 
     pub fn from_file(path: &Path) -> Result<Self, ValidationError> {
-        let mut file = File::open(path).file_in_result(path)?;
+        let mut file = File::open(path).into_in_result(path)?;
         let mut content = String::new();
-        file.read_to_string(&mut content).file_in_result(path)?;
+        file.read_to_string(&mut content).into_in_result(path)?;
         Ok(Self {
             entries: regex::RegexSet::new(content.lines())?,
         })
@@ -502,7 +502,7 @@ fn load_binary(
     file: &Path,
     ignorelist: &IgnoreList,
 ) -> Result<Vec<ValidationSymbol>, ValidationError> {
-    let binary_data = fs::read(file).file_in_result(file)?;
+    let binary_data = fs::read(file).into_in_result(file)?;
     let obj = object::File::parse(&*binary_data)?;
     let mut classifications = classify_symbols(problems, ignorelist, &obj)?;
     Ok(obj

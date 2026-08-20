@@ -20,17 +20,17 @@ const BOLD: Style = Style::new().bold();
 
 #[derive(thiserror::Error, Debug)]
 pub enum DepsError {
-    #[error("Failed to retrieve dependencies from cargo")]
+    #[error("failed to retrieve dependencies from cargo")]
     CargoError(
         #[source]
         #[from]
         cargo_metadata::Error,
     ),
-    #[error("No dependencies found")]
+    #[error("no dependencies found")]
     NoDeps,
-    #[error("Missing root package")]
-    Noroot,
-    #[error("Missing root package")]
+    #[error("missing root package")]
+    NoRoot,
+    #[error("failed to find crate \"{0}\" in dependencies")]
     CrateNotFound(String),
 }
 
@@ -88,6 +88,40 @@ pub struct DepTree {
     pub(crate) crates: BTreeMap<String, Crate>,
 }
 
+#[derive(Debug, Clone)]
+struct FmtNode<'t> {
+    node: &'t Crate,
+    deps: Option<Vec<FmtNode<'t>>>,
+}
+
+impl<'t> FmtNode<'t> {
+    fn fmt_node(&self, f: &mut fmt::Formatter<'_>, lines: &mut Vec<bool>) -> fmt::Result {
+        fmt_lines(f, lines)?;
+        fmt_dep(f, self.node, self.deps.is_none())?;
+        if let Some(deps) = &self.deps {
+            let mut iter = deps.iter().peekable();
+            while let Some(dep) = iter.next() {
+                lines.push(iter.peek().is_some());
+                dep.fmt_node(f, lines)?;
+                lines.pop();
+            }
+        }
+        Ok(())
+    }
+}
+
+struct FmtTree<'t> {
+    root: FmtNode<'t>,
+}
+
+impl<'t> fmt::Display for FmtTree<'t> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut lines = Vec::new();
+        self.root.fmt_node(f, &mut lines)?;
+        Ok(())
+    }
+}
+
 impl DepTree {
     pub fn take_dep_by_name(&mut self, name: &str) -> Option<(String, Crate)> {
         let (id, _) = self.crates.iter().find(|(_, dep)| dep.name == name)?;
@@ -115,82 +149,71 @@ impl DepTree {
         &self.crates
     }
 
-    fn fmt_deptree(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        dep_id: &str,
-        drawn: &mut HashSet<String>,
-        lines: &mut Vec<bool>,
-    ) -> fmt::Result {
-        let dep = self.crates.get(dep_id).ok_or(fmt::Error)?;
-        fmt_lines(f, lines)?;
-        if (!drawn.contains(dep_id)) || self.no_dedupe {
-            fmt_dep(f, dep, false)?;
-            let mut dep_iter = dep
+    fn construct_fmt_node<'t>(
+        &'t self,
+        id: &'t str,
+        node: &'t Crate,
+        seen: &mut HashSet<&'t str>,
+    ) -> FmtNode<'t> {
+        let deps = (self.no_dedupe || !seen.contains(id)).then(|| {
+            self.get_node_deps(node, id)
+                .iter()
+                .filter_map(|id| Some((id, self.crates.get(*id)?)))
+                .filter_map(|(id, dep)| {
+                    if self.display_unspecified || self.any_deps_assigned_and_unseen(id, seen) {
+                        Some(self.construct_fmt_node(id, dep, seen))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        });
+        seen.insert(id);
+        FmtNode { node, deps }
+    }
+
+    fn construct_fmt_tree<'t>(&'t self) -> Option<FmtTree<'t>> {
+        let mut seen = HashSet::<&str>::new();
+        let root = match &self.inverted {
+            Inverted::Not => &self.root,
+            Inverted::Inverted(root) => root,
+        };
+        Some(FmtTree {
+            root: self.construct_fmt_node(root, self.crates.get(root)?, &mut seen),
+        })
+    }
+
+    fn get_node_deps<'t>(&'t self, node: &'t Crate, id: &str) -> Vec<&'t str> {
+        match self.inverted {
+            Inverted::Inverted(_) => self
+                .crates
+                .iter()
+                .filter(|(_, node)| node.dependencies.iter().any(|dep| dep.id == id))
+                .map(|(id, _)| id.as_str())
+                .collect(),
+            Inverted::Not => node
                 .dependencies
                 .iter()
-                .filter(|dep| {
-                    self.display_unspecified
-                        || self
-                            .crates
-                            .get(&dep.id)
-                            .map(|node| node.assignment.is_some())
-                            .unwrap_or(false)
-                })
-                .peekable();
-            while let Some(dep) = dep_iter.next() {
-                lines.push(dep_iter.peek().is_some());
-                self.fmt_deptree(f, &dep.id, drawn, lines)?;
-                lines.pop();
-            }
-            drawn.insert(dep_id.to_owned());
-        } else {
-            fmt_dep(f, dep, true)?;
+                .filter(|dep| matches!(dep.kind, DepKind::Normal))
+                .map(|dep| dep.id.as_str())
+                .collect(),
         }
-        Ok(())
     }
 
-    fn find_dependents(&self, id: &str) -> Vec<String> {
+    fn any_deps_assigned_and_unseen(&self, id: &str, seen: &HashSet<&str>) -> bool {
+        if seen.contains(id) {
+            return false;
+        }
         self.crates
-            .iter()
-            .filter(|(_, node)| node.dependencies.iter().any(|dep| dep.id == id))
-            .map(|(id, _)| id.clone())
-            .collect()
-    }
-
-    fn fmt_inverted_deptree(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        dep_id: &str,
-        drawn: &mut HashSet<String>,
-        lines: &mut Vec<bool>,
-    ) -> fmt::Result {
-        let dep = self.crates.get(dep_id).ok_or(fmt::Error)?;
-        fmt_lines(f, lines)?;
-        if (!drawn.contains(dep_id)) || self.no_dedupe {
-            fmt_dep(f, dep, false)?;
-            let dependents = self.find_dependents(dep_id);
-            let mut dep_iter = dependents
-                .iter()
-                .filter(|id| {
-                    self.display_unspecified
-                        || self
-                            .crates
-                            .get(id.as_str())
-                            .map(|node| node.assignment.is_some())
-                            .unwrap_or(false)
-                })
-                .peekable();
-            while let Some(id) = dep_iter.next() {
-                lines.push(dep_iter.peek().is_some());
-                self.fmt_inverted_deptree(f, id, drawn, lines)?;
-                lines.pop();
-            }
-            drawn.insert(dep_id.to_owned());
-        } else {
-            fmt_dep(f, dep, true)?;
-        }
-        Ok(())
+            .get(id)
+            .map(|node| {
+                node.assignment.is_some()
+                    || self
+                        .get_node_deps(node, id)
+                        .iter()
+                        .any(|id| self.any_deps_assigned_and_unseen(id, seen))
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -242,12 +265,7 @@ fn fmt_lines(f: &mut fmt::Formatter<'_>, lines: &[bool]) -> fmt::Result {
 
 impl fmt::Display for DepTree {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut lines = Vec::new();
-        let mut drawn = HashSet::new();
-        match &self.inverted {
-            Inverted::Not => self.fmt_deptree(f, &self.root, &mut drawn, &mut lines),
-            Inverted::Inverted(root) => self.fmt_inverted_deptree(f, root, &mut drawn, &mut lines),
-        }
+        self.construct_fmt_tree().ok_or(fmt::Error)?.fmt(f)
     }
 }
 
@@ -282,7 +300,7 @@ pub fn get_deps(manifest_path: Option<&Path>) -> Result<DepTree, DepsError> {
     let meta = command.exec()?;
     let root = meta
         .root_package()
-        .ok_or(DepsError::Noroot)?
+        .ok_or(DepsError::NoRoot)?
         .id
         .repr
         .clone();

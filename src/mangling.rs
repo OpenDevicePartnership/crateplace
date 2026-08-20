@@ -4,15 +4,15 @@ static TEST_PROGRAM: &str = "#![no_std] pub fn test() {}";
 
 #[derive(thiserror::Error, Debug)]
 pub enum ManglingDetectionError {
-    #[error("Failed to find a version o rustc to check")]
+    #[error("failed to find a version of rustc to check")]
     NoRustc,
-    #[error("Error while calling rustc: {0}")]
+    #[error("error while calling rustc: {0}")]
     RustcError(std::io::Error),
-    #[error("Failed to communicate with rustc")]
+    #[error("failed to communicate with rustc")]
     NoRustcIO,
-    #[error("Did not recognize mangling scheme: {0}")]
+    #[error("did not recognize mangling scheme: {0}")]
     UnrecognizedMangling(String),
-    #[error("Failed to parse rustc output")]
+    #[error("failed to parse rustc output")]
     LlvmIrParseError,
 }
 
