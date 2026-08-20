@@ -110,3 +110,192 @@ pub fn assign(config: &Config, deps: &mut DepTree) -> Result<(), AssignmentError
     apply_default(config, deps);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        config::{ByteFormat, ByteUnit, CratePlacement, Ram, Section},
+        deps::{Crate, Dep},
+    };
+    use cargo_metadata::semver::Version;
+    use std::collections::{BTreeMap, HashMap};
+
+    fn section(priority: u32, default: bool) -> Section {
+        Section {
+            origin: ByteUnit::new(0, ByteFormat::Bytes),
+            length: ByteUnit::new(1, ByteFormat::Bytes),
+            priority,
+            default,
+        }
+    }
+
+    fn config(
+        sections: impl IntoIterator<Item = (&'static str, Section)>,
+        crates: impl IntoIterator<Item = (&'static str, CratePlacement)>,
+    ) -> Config {
+        Config {
+            ram: Ram {
+                origin: ByteUnit::new(0, ByteFormat::Bytes),
+                length: ByteUnit::new(1, ByteFormat::Bytes),
+            },
+            sections: sections
+                .into_iter()
+                .map(|(name, section)| (name.to_string(), section))
+                .collect::<HashMap<_, _>>(),
+            crates: Some(
+                crates
+                    .into_iter()
+                    .map(|(name, placement)| (name.to_string(), placement))
+                    .collect(),
+            ),
+            symbols: None,
+        }
+    }
+
+    fn crate_node(name: &str, dependencies: Vec<Dep>) -> Crate {
+        Crate {
+            name: name.to_string(),
+            version: Version::new(1, 0, 0),
+            dependencies,
+            assignment: None,
+        }
+    }
+
+    fn dep_tree(crates: impl IntoIterator<Item = (&'static str, Crate)>) -> DepTree {
+        DepTree::from_crates(
+            "app-id".to_string(),
+            crates
+                .into_iter()
+                .map(|(id, node)| (id.to_string(), node))
+                .collect::<BTreeMap<_, _>>(),
+        )
+    }
+
+    #[test]
+    fn missing_crate_returns_contextual_error() {
+        let config = config(
+            [("flash", section(0, false))],
+            [(
+                "missing",
+                CratePlacement {
+                    section: "flash".to_string(),
+                    include_dependencies: false,
+                },
+            )],
+        );
+        let mut deps = dep_tree([]);
+
+        let error = assign(&config, &mut deps).unwrap_err();
+
+        assert!(matches!(
+            error,
+            AssignmentError::CrateNotFound(name) if name == "missing"
+        ));
+    }
+
+    #[test]
+    fn missing_section_returns_crate_and_section_names() {
+        let config = config(
+            [],
+            [(
+                "app",
+                CratePlacement {
+                    section: "missing".to_string(),
+                    include_dependencies: false,
+                },
+            )],
+        );
+        let mut deps = dep_tree([("app-id", crate_node("app", vec![]))]);
+
+        let error = assign(&config, &mut deps).unwrap_err();
+
+        assert!(matches!(
+            error,
+            AssignmentError::SectionMissing { crate_name, section_name }
+                if crate_name == "app" && section_name == "missing"
+        ));
+    }
+
+    #[test]
+    fn assigns_dependencies_by_priority_and_defaults_unassigned_crates() {
+        let config = config(
+            [
+                ("fast", section(1, false)),
+                ("slow", section(10, false)),
+                ("fallback", section(100, true)),
+            ],
+            [
+                (
+                    "app",
+                    CratePlacement {
+                        section: "slow".to_string(),
+                        include_dependencies: true,
+                    },
+                ),
+                (
+                    "leaf",
+                    CratePlacement {
+                        section: "fast".to_string(),
+                        include_dependencies: false,
+                    },
+                ),
+            ],
+        );
+        let mut deps = dep_tree([
+            (
+                "app-id",
+                crate_node(
+                    "app",
+                    vec![
+                        Dep {
+                            id: "shared-id".to_string(),
+                            kind: DepKind::Normal,
+                        },
+                        Dep {
+                            id: "dev-id".to_string(),
+                            kind: DepKind::Dev,
+                        },
+                    ],
+                ),
+            ),
+            (
+                "shared-id",
+                crate_node(
+                    "shared",
+                    vec![Dep {
+                        id: "leaf-id".to_string(),
+                        kind: DepKind::Normal,
+                    }],
+                ),
+            ),
+            ("leaf-id", crate_node("leaf", vec![])),
+            ("dev-id", crate_node("dev-only", vec![])),
+            ("other-id", crate_node("other", vec![])),
+        ]);
+
+        assign(&config, &mut deps).unwrap();
+
+        let crates = deps.get_crates();
+        let app = crates["app-id"].assignment.as_ref().unwrap();
+        assert_eq!(app.name, "slow");
+        assert_eq!(app.priority, 10);
+        assert!(app.user_assigned);
+
+        let shared = crates["shared-id"].assignment.as_ref().unwrap();
+        assert_eq!(shared.name, "slow");
+        assert!(!shared.user_assigned);
+
+        let leaf = crates["leaf-id"].assignment.as_ref().unwrap();
+        assert_eq!(leaf.name, "fast");
+        assert_eq!(leaf.priority, 1);
+        assert!(leaf.user_assigned);
+
+        for id in ["dev-id", "other-id"] {
+            let assignment = crates[id].assignment.as_ref().unwrap();
+            assert_eq!(assignment.name, "fallback");
+            assert_eq!(assignment.priority, 100);
+            assert!(!assignment.user_assigned);
+        }
+    }
+}

@@ -736,3 +736,63 @@ pub(crate) fn validate(
     }
     Ok(problems)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_crate_names_from_supported_mangling_schemes() {
+        assert_eq!(extract_crate_name("_ZN8my_crate3fooE").unwrap(), "my_crate");
+        assert_eq!(
+            extract_crate_name("_RCabc_8my_crate3foo").unwrap(),
+            "my_crate"
+        );
+    }
+
+    #[test]
+    fn malformed_mangled_name_reports_missing_crate_name() {
+        let error = extract_crate_name("_Rmissing_markers").unwrap_err();
+
+        assert!(matches!(
+            error,
+            ValidationProblem::NoCrateName { name } if name == "_Rmissing_markers"
+        ));
+    }
+
+    #[test]
+    fn classification_honors_ignorelist_before_mangling() {
+        let ignorelist = IgnoreList::new(["^ignored$"]).unwrap();
+
+        let class = classify_rust_symbol("ignored", &ignorelist, "not-mangled", None).unwrap();
+
+        assert!(matches!(class, SymbolClass::Ignored));
+    }
+
+    #[test]
+    fn non_mangled_symbol_uses_alternative_crate_name() {
+        let ignorelist = IgnoreList::new(std::iter::empty::<&str>()).unwrap();
+
+        let class =
+            classify_rust_symbol("handler", &ignorelist, "handler", Some("my_crate")).unwrap();
+
+        assert!(matches!(
+            class,
+            SymbolClass::RustNonMangled { name, crate_name }
+                if name == "handler" && crate_name == "my_crate"
+        ));
+    }
+
+    #[test]
+    fn unknown_mangling_scheme_preserves_symbol_context() {
+        let ignorelist = IgnoreList::new(std::iter::empty::<&str>()).unwrap();
+
+        let error = classify_rust_symbol("handler", &ignorelist, "not-mangled", None).unwrap_err();
+
+        assert!(matches!(
+            error,
+            ValidationProblem::UnknownManglingScheme { name, mangled_name }
+                if name == "handler" && mangled_name == "not-mangled"
+        ));
+    }
+}

@@ -97,3 +97,30 @@ where
     ManglingVersion::from_mangling_string_prefix(mangling_string)
         .ok_or_else(|| ManglingDetectionError::UnrecognizedMangling(mangling_string.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_supported_mangling_prefixes() {
+        assert!(matches!(
+            ManglingVersion::from_mangling_string_prefix("_RNvC4test4main"),
+            Some(ManglingVersion::V0)
+        ));
+        assert!(matches!(
+            ManglingVersion::from_mangling_string_prefix("_ZN4test4mainE"),
+            Some(ManglingVersion::Legacy)
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_mangling_prefixes() {
+        for symbol in ["", "_", "R", "_Z", "test::main"] {
+            assert!(
+                ManglingVersion::from_mangling_string_prefix(symbol).is_none(),
+                "accepted {symbol:?}"
+            );
+        }
+    }
+}
