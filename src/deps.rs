@@ -123,6 +123,17 @@ impl<'t> fmt::Display for FmtTree<'t> {
 }
 
 impl DepTree {
+    #[cfg(test)]
+    pub(crate) fn from_crates(root: String, crates: BTreeMap<String, Crate>) -> Self {
+        Self {
+            display_unspecified: false,
+            no_dedupe: false,
+            inverted: Inverted::Not,
+            root,
+            crates,
+        }
+    }
+
     pub fn take_dep_by_name(&mut self, name: &str) -> Option<(String, Crate)> {
         let (id, _) = self.crates.iter().find(|(_, dep)| dep.name == name)?;
         let id = id.clone();

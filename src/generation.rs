@@ -190,3 +190,106 @@ pub fn generate_script(
         {post}
     "}
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        config::{ByteFormat, ByteUnit, CratePlacement, Ram, Section, SymPlacement, SymbolTypes},
+        deps::{Crate, SectionAssignment},
+    };
+    use cargo_metadata::semver::Version;
+    use std::collections::{BTreeMap, HashMap};
+
+    #[test]
+    fn section_targets_remove_separators_and_use_uppercase() {
+        assert_eq!(section_name_to_target("fast-flash_bank"), "FASTFLASHBANK");
+    }
+
+    #[test]
+    fn mangling_modes_generate_the_expected_patterns() {
+        let legacy = generate_mangling_matches("my_crate", ManglingMatches::Legacy);
+        let v0 = generate_mangling_matches("my_crate", ManglingMatches::V0);
+        let all = generate_mangling_matches("my_crate", ManglingMatches::All);
+
+        assert_eq!(legacy.len(), 33);
+        assert_eq!(legacy[0], "_ZN8my_crate");
+        assert_eq!(v0.len(), 26);
+        assert_eq!(v0[0], "_R_8my_crate");
+        assert_eq!(all.len(), legacy.len() + v0.len());
+        assert!(all.starts_with(&legacy));
+        assert!(all.ends_with(&v0));
+    }
+
+    #[test]
+    fn script_contains_includes_crate_matches_and_enabled_symbol_types() {
+        let section_name = "fast-flash".to_string();
+        let config = Config {
+            ram: Ram {
+                origin: ByteUnit::new(0x2000_0000, ByteFormat::Hex),
+                length: ByteUnit::new(64 * 1024, ByteFormat::Kibi),
+            },
+            sections: HashMap::from([(
+                section_name.clone(),
+                Section {
+                    origin: ByteUnit::new(0x0800_0000, ByteFormat::Hex),
+                    length: ByteUnit::new(512 * 1024, ByteFormat::Kibi),
+                    priority: 0,
+                    default: false,
+                },
+            )]),
+            crates: Some(HashMap::from([(
+                "my-crate".to_string(),
+                CratePlacement {
+                    section: section_name.clone(),
+                    include_dependencies: false,
+                },
+            )])),
+            symbols: Some(HashMap::from([(
+                "interrupt*".to_string(),
+                SymPlacement {
+                    section: section_name.clone(),
+                    symbol_types: SymbolTypes {
+                        text: true,
+                        rodata: false,
+                        datarel: false,
+                    },
+                },
+            )])),
+        };
+        let deps = DepTree::from_crates(
+            "my-crate-id".to_string(),
+            BTreeMap::from([(
+                "my-crate-id".to_string(),
+                Crate {
+                    name: "my-crate".to_string(),
+                    version: Version::new(1, 0, 0),
+                    dependencies: vec![],
+                    assignment: Some(SectionAssignment {
+                        name: section_name,
+                        priority: 0,
+                        user_assigned: true,
+                    }),
+                },
+            )]),
+        );
+
+        let script = generate_script(
+            &config,
+            &deps,
+            ManglingMatches::Legacy,
+            Some("device.x"),
+            Some("sections.x"),
+        );
+
+        assert!(script.contains("INCLUDE device.x\n\nMEMORY"));
+        assert!(script.contains("RAM : ORIGIN = 0x20000000, LENGTH = 64K"));
+        assert!(script.contains("FASTFLASH : ORIGIN = 0x8000000, LENGTH = 512K"));
+        assert!(script.contains("*(.text._ZN8my_crate*)"));
+        assert!(script.contains("*(.text.interrupt*)"));
+        assert!(script.contains("*(.text.unlikely.interrupt*)"));
+        assert!(!script.contains("*(.rodata.interrupt*)"));
+        assert!(!script.contains("*(.data.rel.ro.interrupt*)"));
+        assert!(script.ends_with("INCLUDE sections.x\n"));
+    }
+}
