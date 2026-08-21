@@ -670,6 +670,28 @@ pub enum ConfigModificationError {
 mod tests {
     use super::*;
 
+    fn config_from_str(input: &str) -> Config {
+        toml::from_str(input).unwrap()
+    }
+
+    fn valid_config() -> Config {
+        config_from_str(
+            r#"
+                ram = { origin = "0x20000000", length = "64K" }
+
+                [sections]
+                flash = { origin = "0x08000000", length = "64K", priority = 1, default = true }
+            "#,
+        )
+    }
+
+    fn temporary_config_path(test_name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "crateplace-{test_name}-{}-Memory.toml",
+            std::process::id()
+        ))
+    }
+
     #[test]
     fn byte_units_parse_to_bytes() {
         let cases = [
@@ -694,6 +716,169 @@ mod tests {
         for input in ["", "0x", "K", "-1", "1.5M"] {
             assert!(ByteUnit::from_str(input).is_err(), "accepted {input:?}");
         }
+    }
+
+    #[test]
+    fn byte_units_preserve_their_input_format() {
+        for (input, expected) in [
+            ("0x1000", "0x1000"),
+            ("512", "512"),
+            ("2K", "2K"),
+            ("3M", "3M"),
+            ("4G", "4G"),
+        ] {
+            assert_eq!(ByteUnit::from_str(input).unwrap().to_string(), expected);
+        }
+
+        assert_eq!(ByteUnit::new(2048, ByteFormat::Kibi).to_string(), "2K");
+    }
+
+    #[test]
+    fn byte_units_deserialize_from_integers_and_strings() {
+        #[derive(serde::Deserialize)]
+        struct Values {
+            integer: ByteUnit,
+            string: ByteUnit,
+        }
+
+        let values: Values = toml::from_str("integer = 4096\nstring = \"4K\"").unwrap();
+
+        assert_eq!(values.integer.as_bytes(), 4096);
+        assert_eq!(values.string.as_bytes(), 4096);
+        assert!(toml::from_str::<Values>("integer = -1\nstring = \"4K\"").is_err());
+    }
+
+    #[test]
+    fn valid_configuration_passes_validation() {
+        valid_config().validate().unwrap();
+    }
+
+    #[test]
+    fn configuration_rejects_invalid_assignments() {
+        let missing_crate_section = config_from_str(
+            r#"
+                ram = { origin = 0, length = "1K" }
+                [sections]
+                flash = { origin = "2K", length = "1K" }
+                [crates]
+                app = { section = "missing" }
+            "#,
+        );
+        assert!(matches!(
+            missing_crate_section.validate(),
+            Err(ConfigValidationError::NonExistentSection(name, section))
+                if name == "app" && section == "missing"
+        ));
+
+        let disabled_symbol = config_from_str(
+            r#"
+                ram = { origin = 0, length = "1K" }
+                [sections]
+                flash = { origin = "2K", length = "1K" }
+                [symbols]
+                handler = { section = "flash", text = false, rodata = false, datarel = false }
+            "#,
+        );
+        assert!(matches!(
+            disabled_symbol.validate(),
+            Err(ConfigValidationError::SymbolWithoutSections(name)) if name == "handler"
+        ));
+    }
+
+    #[test]
+    fn configuration_rejects_multiple_default_sections() {
+        let config = config_from_str(
+            r#"
+                ram = { origin = 0, length = "1K" }
+                [sections]
+                first = { origin = "2K", length = "1K", priority = 1, default = true }
+                second = { origin = "3K", length = "1K", priority = 2, default = true }
+            "#,
+        );
+
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigValidationError::MultipleDefaults)
+        ));
+    }
+
+    #[test]
+    fn configuration_mutations_are_persisted() {
+        let path = temporary_config_path("mutations");
+        let mut config = valid_config();
+        fs::write(&path, toml::to_string(&config).unwrap()).unwrap();
+
+        config
+            .add_section(
+                &path,
+                "boot",
+                ByteUnit::from_str("0x08010000").unwrap(),
+                ByteUnit::from_str("32K").unwrap(),
+                2,
+                false,
+            )
+            .unwrap();
+        config.add_crate(&path, "app", "boot", true).unwrap();
+        config
+            .add_symbol(&path, "handler*", "boot", true, false, false)
+            .unwrap();
+        config
+            .set_ram(
+                &path,
+                ByteUnit::from_str("0x30000000").unwrap(),
+                ByteUnit::from_str("128K").unwrap(),
+            )
+            .unwrap();
+
+        let persisted = Config::from_file(&path).unwrap();
+        persisted.validate().unwrap();
+        assert_eq!(persisted.ram.origin.as_bytes(), 0x30000000);
+        assert!(persisted.sections.contains_key("boot"));
+        assert!(persisted.crates.as_ref().unwrap().contains_key("app"));
+        assert!(persisted.symbols.as_ref().unwrap().contains_key("handler*"));
+
+        config.remove_symbol(&path, "handler*").unwrap();
+        config.remove_crate(&path, "app").unwrap();
+        config.remove_section(&path, "boot").unwrap();
+
+        let persisted = Config::from_file(&path).unwrap();
+        assert!(!persisted.sections.contains_key("boot"));
+        assert!(!persisted.crates.unwrap().contains_key("app"));
+        assert!(!persisted.symbols.unwrap().contains_key("handler*"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn configuration_mutations_reject_duplicate_or_missing_names() {
+        let path = temporary_config_path("mutation-errors");
+        let mut config = valid_config();
+        fs::write(&path, toml::to_string(&config).unwrap()).unwrap();
+
+        assert!(matches!(
+            config.add_section(
+                &path,
+                "flash",
+                ByteUnit::new(0, ByteFormat::Bytes),
+                ByteUnit::new(1, ByteFormat::Bytes),
+                2,
+                false,
+            ),
+            Err(ConfigModificationError::NameExists(name)) if name == "flash"
+        ));
+        assert!(matches!(
+            config.remove_section(&path, "missing"),
+            Err(ConfigModificationError::NameDoesNotExist(name)) if name == "missing"
+        ));
+        assert!(matches!(
+            config.remove_crate(&path, "missing"),
+            Err(ConfigModificationError::NameDoesNotExist(name)) if name == "missing"
+        ));
+        assert!(matches!(
+            config.remove_symbol(&path, "missing"),
+            Err(ConfigModificationError::NameDoesNotExist(name)) if name == "missing"
+        ));
+
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
