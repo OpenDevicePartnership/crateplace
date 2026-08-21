@@ -358,3 +358,193 @@ pub fn get_deps(manifest_path: Option<&Path>) -> Result<DepTree, DepsError> {
         inverted: Inverted::Not,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dependency(id: &str) -> Dep {
+        Dep {
+            id: id.to_string(),
+            kind: DepKind::Normal,
+        }
+    }
+
+    fn development_dependency(id: &str) -> Dep {
+        Dep {
+            id: id.to_string(),
+            kind: DepKind::Dev,
+        }
+    }
+
+    fn package(name: &str, dependencies: Vec<Dep>) -> Crate {
+        Crate {
+            name: name.to_string(),
+            version: Version::new(1, 2, 3),
+            dependencies,
+            assignment: None,
+        }
+    }
+
+    fn sample_tree() -> DepTree {
+        DepTree::from_crates(
+            "app".to_string(),
+            BTreeMap::from([
+                (
+                    "app".to_string(),
+                    package("app", vec![dependency("shared"), dependency("feature")]),
+                ),
+                (
+                    "feature".to_string(),
+                    package("feature", vec![dependency("shared")]),
+                ),
+                (
+                    "shared".to_string(),
+                    package("shared", vec![dependency("leaf")]),
+                ),
+                ("leaf".to_string(), package("leaf", Vec::new())),
+            ]),
+        )
+    }
+
+    #[test]
+    fn discovers_dependencies_from_the_project_manifest() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+
+        let tree = get_deps(Some(&manifest)).unwrap();
+        let root = tree.get_crates().get(tree.get_root()).unwrap();
+
+        assert_eq!(root.name, "crateplace");
+        assert!(
+            tree.get_crates()
+                .values()
+                .any(|package| package.name == "clap")
+        );
+        for built_in in ["core", "std", "compiler_builtins", "__rustc"] {
+            assert!(tree.get_crates().contains_key(built_in));
+        }
+    }
+
+    #[test]
+    fn takes_a_dependency_by_package_name() {
+        let mut tree = sample_tree();
+
+        let (id, package) = tree.take_dep_by_name("feature").unwrap();
+
+        assert_eq!(id, "feature");
+        assert_eq!(package.name, "feature");
+        assert!(tree.take_dep_by_name("missing").is_none());
+    }
+
+    #[test]
+    fn formats_assigned_dependency_paths_and_deduplicates_repeats() {
+        let mut tree = sample_tree();
+        tree.crates.get_mut("feature").unwrap().assignment = Some(SectionAssignment {
+            name: "fast".to_string(),
+            priority: 7,
+            user_assigned: true,
+        });
+        tree.crates.get_mut("shared").unwrap().assignment = Some(SectionAssignment {
+            name: "default".to_string(),
+            priority: 0,
+            user_assigned: false,
+        });
+        tree.display_unspecified(true);
+
+        let output = tree.to_string();
+
+        assert!(output.contains("app v1.2.3"));
+        assert!(output.contains("feature v1.2.3"));
+        assert!(output.contains("fast"));
+        assert!(output.contains("prio:7"));
+        assert!(output.contains("shared v1.2.3"));
+        assert!(output.contains("default"));
+        assert!(output.contains("(*)"));
+        assert_eq!(output.matches("leaf v1.2.3").count(), 1);
+    }
+
+    #[test]
+    fn display_options_include_unspecified_and_repeated_dependencies() {
+        let mut tree = sample_tree();
+        tree.display_unspecified(true);
+        tree.no_dedupe(true);
+
+        let output = tree.to_string();
+
+        assert!(output.contains("unspecified"));
+        assert_eq!(output.matches("shared v1.2.3").count(), 2);
+        assert_eq!(output.matches("leaf v1.2.3").count(), 2);
+    }
+
+    #[test]
+    fn filters_development_and_unassigned_dependencies() {
+        let mut tree = DepTree::from_crates(
+            "app".to_string(),
+            BTreeMap::from([
+                (
+                    "app".to_string(),
+                    package(
+                        "app",
+                        vec![
+                            dependency("assigned"),
+                            dependency("unassigned"),
+                            development_dependency("development"),
+                        ],
+                    ),
+                ),
+                ("assigned".to_string(), package("assigned", Vec::new())),
+                (
+                    "development".to_string(),
+                    package("development", Vec::new()),
+                ),
+                ("unassigned".to_string(), package("unassigned", Vec::new())),
+            ]),
+        );
+        tree.crates.get_mut("assigned").unwrap().assignment = Some(SectionAssignment {
+            name: "flash".to_string(),
+            priority: 1,
+            user_assigned: true,
+        });
+        tree.crates.get_mut("development").unwrap().assignment = Some(SectionAssignment {
+            name: "flash".to_string(),
+            priority: 2,
+            user_assigned: true,
+        });
+
+        let output = tree.to_string();
+
+        assert!(output.contains("assigned v1.2.3"));
+        assert!(!output.contains("unassigned v1.2.3"));
+        assert!(!output.contains("development v1.2.3"));
+    }
+
+    #[test]
+    fn inverted_tree_shows_reverse_dependencies() {
+        let mut tree = sample_tree();
+        tree.display_unspecified(true);
+        tree.inverted(Inverted::Inverted("shared".to_string()));
+
+        let output = tree.to_string();
+        let lines = output.lines().collect::<Vec<_>>();
+
+        assert_eq!(lines.len(), 4);
+        assert!(lines[0].starts_with("shared v1.2.3"));
+        assert!(lines[1].contains("├── ") && lines[1].contains("app v1.2.3"));
+        assert!(lines[2].contains("└── ") && lines[2].contains("feature v1.2.3"));
+        assert!(lines[3].contains("    ") && lines[3].contains("└── "));
+        assert!(lines[3].contains("app v1.2.3"));
+        assert!(lines[3].contains("(*)"));
+    }
+
+    #[test]
+    fn missing_display_root_returns_a_formatting_error() {
+        let mut tree = sample_tree();
+        tree.inverted(Inverted::Inverted("missing".to_string()));
+
+        let mut output = String::new();
+        let result = fmt::write(&mut output, format_args!("{tree}"));
+
+        assert!(result.is_err());
+        assert!(output.is_empty());
+    }
+}
