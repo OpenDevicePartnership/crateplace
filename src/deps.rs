@@ -370,6 +370,13 @@ mod tests {
         }
     }
 
+    fn development_dependency(id: &str) -> Dep {
+        Dep {
+            id: id.to_string(),
+            kind: DepKind::Dev,
+        }
+    }
+
     fn package(name: &str, dependencies: Vec<Dep>) -> Crate {
         Crate {
             name: name.to_string(),
@@ -391,7 +398,11 @@ mod tests {
                     "feature".to_string(),
                     package("feature", vec![dependency("shared")]),
                 ),
-                ("shared".to_string(), package("shared", Vec::new())),
+                (
+                    "shared".to_string(),
+                    package("shared", vec![dependency("leaf")]),
+                ),
+                ("leaf".to_string(), package("leaf", Vec::new())),
             ]),
         )
     }
@@ -449,6 +460,7 @@ mod tests {
         assert!(output.contains("shared v1.2.3"));
         assert!(output.contains("default"));
         assert!(output.contains("(*)"));
+        assert_eq!(output.matches("leaf v1.2.3").count(), 1);
     }
 
     #[test]
@@ -461,6 +473,49 @@ mod tests {
 
         assert!(output.contains("unspecified"));
         assert_eq!(output.matches("shared v1.2.3").count(), 2);
+        assert_eq!(output.matches("leaf v1.2.3").count(), 2);
+    }
+
+    #[test]
+    fn filters_development_and_unassigned_dependencies() {
+        let mut tree = DepTree::from_crates(
+            "app".to_string(),
+            BTreeMap::from([
+                (
+                    "app".to_string(),
+                    package(
+                        "app",
+                        vec![
+                            dependency("assigned"),
+                            dependency("unassigned"),
+                            development_dependency("development"),
+                        ],
+                    ),
+                ),
+                ("assigned".to_string(), package("assigned", Vec::new())),
+                (
+                    "development".to_string(),
+                    package("development", Vec::new()),
+                ),
+                ("unassigned".to_string(), package("unassigned", Vec::new())),
+            ]),
+        );
+        tree.crates.get_mut("assigned").unwrap().assignment = Some(SectionAssignment {
+            name: "flash".to_string(),
+            priority: 1,
+            user_assigned: true,
+        });
+        tree.crates.get_mut("development").unwrap().assignment = Some(SectionAssignment {
+            name: "flash".to_string(),
+            priority: 2,
+            user_assigned: true,
+        });
+
+        let output = tree.to_string();
+
+        assert!(output.contains("assigned v1.2.3"));
+        assert!(!output.contains("unassigned v1.2.3"));
+        assert!(!output.contains("development v1.2.3"));
     }
 
     #[test]
@@ -470,10 +525,15 @@ mod tests {
         tree.inverted(Inverted::Inverted("shared".to_string()));
 
         let output = tree.to_string();
+        let lines = output.lines().collect::<Vec<_>>();
 
-        assert!(output.starts_with("shared v1.2.3"));
-        assert!(output.contains("app v1.2.3"));
-        assert!(output.contains("feature v1.2.3"));
+        assert_eq!(lines.len(), 4);
+        assert!(lines[0].starts_with("shared v1.2.3"));
+        assert!(lines[1].contains("├── ") && lines[1].contains("app v1.2.3"));
+        assert!(lines[2].contains("└── ") && lines[2].contains("feature v1.2.3"));
+        assert!(lines[3].contains("    ") && lines[3].contains("└── "));
+        assert!(lines[3].contains("app v1.2.3"));
+        assert!(lines[3].contains("(*)"));
     }
 
     #[test]

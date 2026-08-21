@@ -719,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn byte_units_preserve_their_input_format() {
+    fn byte_units_preserve_their_format_category() {
         for (input, expected) in [
             ("0x1000", "0x1000"),
             ("512", "512"),
@@ -833,9 +833,20 @@ mod tests {
         let persisted = Config::from_file(&path).unwrap();
         persisted.validate().unwrap();
         assert_eq!(persisted.ram.origin.as_bytes(), 0x30000000);
-        assert!(persisted.sections.contains_key("boot"));
-        assert!(persisted.crates.as_ref().unwrap().contains_key("app"));
-        assert!(persisted.symbols.as_ref().unwrap().contains_key("handler*"));
+        assert_eq!(persisted.ram.length.as_bytes(), 128 * 1024);
+        let boot = persisted.sections.get("boot").unwrap();
+        assert_eq!(boot.origin.as_bytes(), 0x08010000);
+        assert_eq!(boot.length.as_bytes(), 32 * 1024);
+        assert_eq!(boot.priority, 2);
+        assert!(!boot.default);
+        let app = persisted.crates.as_ref().unwrap().get("app").unwrap();
+        assert_eq!(app.section, "boot");
+        assert!(app.include_dependencies);
+        let handler = persisted.symbols.as_ref().unwrap().get("handler*").unwrap();
+        assert_eq!(handler.section, "boot");
+        assert!(handler.symbol_types.text);
+        assert!(!handler.symbol_types.rodata);
+        assert!(!handler.symbol_types.datarel);
 
         config.remove_symbol(&path, "handler*").unwrap();
         config.remove_crate(&path, "app").unwrap();
@@ -864,6 +875,18 @@ mod tests {
                 false,
             ),
             Err(ConfigModificationError::NameExists(name)) if name == "flash"
+        ));
+        config.add_crate(&path, "app", "flash", true).unwrap();
+        assert!(matches!(
+            config.add_crate(&path, "app", "flash", false),
+            Err(ConfigModificationError::NameExists(name)) if name == "app"
+        ));
+        config
+            .add_symbol(&path, "handler*", "flash", true, true, true)
+            .unwrap();
+        assert!(matches!(
+            config.add_symbol(&path, "handler*", "flash", true, false, false),
+            Err(ConfigModificationError::NameExists(name)) if name == "handler*"
         ));
         assert!(matches!(
             config.remove_section(&path, "missing"),
