@@ -1,7 +1,7 @@
 use crate::{config::Config, deps::DepTree};
 use indoc::formatdoc;
 
-fn section_name_to_target(name: &str) -> String {
+pub(crate) fn section_name_to_target(name: &str) -> String {
     name.replace("-", "").replace("_", "").to_uppercase()
 }
 
@@ -48,8 +48,40 @@ fn generate_memory(config: &Config) -> String {
             formatdoc! {"
             {name} : ORIGIN = {origin}, LENGTH = {length}"}
         })
+        .chain(config.noload_sections.iter().map(|(name, section)| {
+            let target = section_name_to_target(name);
+            format!(
+                "NOLOAD_{target} : ORIGIN = {}, LENGTH = {}",
+                section.origin, section.length
+            )
+        }))
         .collect::<Vec<_>>()
         .join("\n    ")
+}
+
+fn generate_noload_sections(config: &Config) -> String {
+    if config.noload_sections.is_empty() {
+        return String::new();
+    }
+    let sections = config
+        .noload_sections
+        .iter()
+        .map(|(name, section)| {
+            let target = section_name_to_target(name);
+            let alignment = section.alignment;
+            formatdoc! {"
+            .{name} ORIGIN(NOLOAD_{target}) (NOLOAD) : ALIGN({alignment})
+            {{
+                KEEP(*(.{name} .{name}.*))
+                . = ALIGN({alignment});
+            }} > NOLOAD_{target}
+            ASSERT(ADDR(.{name}) == ORIGIN(NOLOAD_{target}), \"{name}: incorrect address\")
+            ASSERT(SIZEOF(.{name}) <= LENGTH(NOLOAD_{target}), \"{name}: reserved region overflow\")
+        "}
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("\nSECTIONS {{\n{sections}}} INSERT AFTER .uninit;\n")
 }
 
 fn generate_dep_matches(section_name: &str, deps: &DepTree, mangling: ManglingMatches) -> String {
@@ -167,6 +199,7 @@ pub fn generate_script(
     let memory = generate_memory(config);
     let crate_sections = generate_crate_sections(config, deps, mangling);
     let user_sections = generate_user_sections(config);
+    let noload_sections = generate_noload_sections(config);
     let ram_origin = &config.ram.origin;
     let ram_len = &config.ram.length;
     let mut pre_str = None;
@@ -187,6 +220,7 @@ pub fn generate_script(
         }}
 
         SECTIONS {{{user_sections}{crate_sections}}} INSERT AFTER .text
+        {noload_sections}
         {post}
     "}
 }
@@ -204,6 +238,32 @@ mod tests {
     #[test]
     fn section_targets_remove_separators_and_use_uppercase() {
         assert_eq!(section_name_to_target("fast-flash_bank"), "FASTFLASHBANK");
+    }
+
+    #[test]
+    fn noload_sections_have_fixed_addresses_and_kept_inputs() {
+        let config: Config = toml::from_str(
+            r#"
+ram = { origin = "0x20000000", length = "636K" }
+[sections.flash]
+origin = "0x10000"
+length = "512K"
+[noload_sections.retained_nvram]
+origin = "0x2009FFD0"
+length = "48"
+"#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        let memory = generate_memory(&config);
+        assert!(memory.contains("NOLOAD_RETAINEDNVRAM : ORIGIN = 0x2009FFD0, LENGTH = 48"));
+        let script = generate_noload_sections(&config);
+        assert!(
+            script.contains(".retained_nvram ORIGIN(NOLOAD_RETAINEDNVRAM) (NOLOAD) : ALIGN(4)")
+        );
+        assert!(script.contains("KEEP(*(.retained_nvram .retained_nvram.*))"));
+        assert!(script.contains("INSERT AFTER .uninit;"));
+        assert!(script.contains("SIZEOF(.retained_nvram) <= LENGTH(NOLOAD_RETAINEDNVRAM)"));
     }
 
     #[test]
@@ -225,6 +285,7 @@ mod tests {
     fn script_contains_includes_crate_matches_and_enabled_symbol_types() {
         let section_name = "fast-flash".to_string();
         let config = Config {
+            noload_sections: Default::default(),
             ram: Ram {
                 origin: ByteUnit::new(0x2000_0000, ByteFormat::Hex),
                 length: ByteUnit::new(64 * 1024, ByteFormat::Kibi),

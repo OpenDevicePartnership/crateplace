@@ -97,3 +97,30 @@ These patterns will override the crates section and will include symbols linked 
 The section is designated just like crates with `section`.
 By default crateplace will include the `text`, `rodata` and the `data.rel` sections.
 These can be disabled individually with the `rodata`, `datarel` and the `text` booleans per symbol.
+
+### Fixed-address NOLOAD sections
+
+Optional `noload_sections` reserve memory for data that must remain at a fixed
+address without being initialized from the firmware image.
+
+```toml
+ram = { origin = "0x20000000", length = "636K" }
+
+[noload_sections.retained_nvram]
+origin = "0x2009FFD0"
+length = "48"
+alignment = 4
+```
+
+`alignment` defaults to 4 and must be a power of two. Both `origin` and `length`
+must be aligned, and `length` must be nonzero. Reservations must not overflow or
+overlap RAM, flash sections, or other NOLOAD sections.
+
+Each entry creates a dedicated memory region and a fixed-address output section
+matching `.<name>` and `.<name>.*`, with `KEEP`, `NOLOAD`, and address/size
+assertions. These sections are inserted after `.uninit` in the runtime linker
+script. Names use ASCII letters, digits, and underscores, cannot start with a
+digit, and cannot conflict with runtime sections or other linker memory regions.
+
+Carve reservations out of ordinary RAM explicitly; this tool does not infer a
+chip's physical memory bounds or retention capabilities.

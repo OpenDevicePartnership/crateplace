@@ -195,10 +195,25 @@ pub struct Ram {
     pub(crate) length: ByteUnit,
 }
 
+fn default_alignment() -> u64 {
+    4
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct NoLoadSection {
+    pub origin: ByteUnit,
+    pub length: ByteUnit,
+    #[serde(default = "default_alignment")]
+    pub alignment: u64,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Config {
     pub(crate) ram: Ram,
     pub(crate) sections: HashMap<String, Section>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(crate) noload_sections: std::collections::BTreeMap<String, NoLoadSection>,
     pub(crate) crates: Option<HashMap<String, CratePlacement>>,
     pub(crate) symbols: Option<HashMap<String, SymPlacement>>,
 }
@@ -231,6 +246,14 @@ impl FileConfigData for Config {
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ConfigValidationError {
+    #[error("invalid or reserved NOLOAD section name: \"{0}\"")]
+    InvalidNoLoadName(String),
+    #[error(
+        "NOLOAD section \"{0}\" requires a power-of-two alignment and an aligned origin/length"
+    )]
+    InvalidNoLoadAlignment(String),
+    #[error("duplicate linker memory region name: \"{0}\"")]
+    DuplicateTarget(String),
     #[error("section \"{1}\" overlaps with \"{0}\"")]
     Overlap(String, String),
     #[error("failed to parse \"{0}\" as a memory offset")]
@@ -253,6 +276,104 @@ pub enum ConfigValidationError {
         "symbol assigned to emit no sections: {0}, symbol should have at least one of: text, rodata, or reldata set to true"
     )]
     SymbolWithoutSections(String),
+}
+
+#[cfg(test)]
+mod noload_tests {
+    use super::*;
+
+    fn config(extra: &str) -> Config {
+        toml::from_str(&format!(
+            r#"
+ram = {{ origin = "0x20000000", length = "636K" }}
+[sections.flash]
+origin = "0x10000"
+length = "512K"
+{extra}
+"#
+        ))
+        .unwrap()
+    }
+
+    fn section(name: &str, origin: &str, length: &str, alignment: u64) -> String {
+        format!(
+            r#"
+[noload_sections.{name}]
+origin = "{origin}"
+length = "{length}"
+alignment = {alignment}
+"#
+        )
+    }
+
+    #[test]
+    fn existing_configs_need_no_noload_sections() {
+        assert!(config("").validate().is_ok());
+    }
+
+    #[test]
+    fn adjacent_regions_are_allowed() {
+        let extra =
+            section("first", "0x2009F000", "48", 4) + &section("second", "0x2009F030", "48", 4);
+        assert!(config(&extra).validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_overlap_with_ram_flash_and_other_noload_regions() {
+        for extra in [
+            section("record", "0x2009EFF0", "48", 4),
+            section("record", "0x10000", "48", 4),
+            section("first", "0x2009F000", "48", 4) + &section("second", "0x2009F020", "48", 4),
+        ] {
+            assert!(matches!(
+                config(&extra).validate(),
+                Err(ConfigValidationError::Overlap(..))
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_zero_length_and_address_overflow() {
+        assert!(matches!(
+            config(&section("record", "0x2009F000", "0", 4)).validate(),
+            Err(ConfigValidationError::ZeroSection(_))
+        ));
+        assert!(matches!(
+            config(&section("record", "0xFFFFFFFFFFFFFFF0", "48", 4)).validate(),
+            Err(ConfigValidationError::OverFlow(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_alignment() {
+        for (origin, length, alignment) in [
+            ("0x2009F000", "48", 0),
+            ("0x2009F000", "48", 3),
+            ("0x2009F001", "48", 4),
+            ("0x2009F000", "47", 4),
+        ] {
+            assert!(matches!(
+                config(&section("record", origin, length, alignment)).validate(),
+                Err(ConfigValidationError::InvalidNoLoadAlignment(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_or_colliding_section_names() {
+        for name in ["bss", "uninit", "flash", "0record", "bad-name"] {
+            assert!(matches!(
+                config(&section(name, "0x2009F000", "48", 4)).validate(),
+                Err(ConfigValidationError::InvalidNoLoadName(_))
+            ));
+        }
+        let extra = section("my_record", "0x2009F000", "48", 4)
+            + &section("myrecord", "0x2009F030", "48", 4);
+        assert!(matches!(
+            config(&extra).validate(),
+            Err(ConfigValidationError::DuplicateTarget(_))
+        ));
+    }
 }
 
 struct OccupiedSpace {
@@ -366,6 +487,51 @@ impl Config {
                 section.origin.as_bytes(),
                 section.length.as_bytes(),
                 Some(section.priority),
+            )?;
+        }
+        let mut targets = HashSet::from(["RAM".to_string()]);
+        for name in self.sections.keys() {
+            let target = crate::generation::section_name_to_target(name);
+            if !targets.insert(target.clone()) {
+                return Err(ConfigValidationError::DuplicateTarget(target));
+            }
+        }
+        for (name, section) in &self.noload_sections {
+            let valid_name = !name.is_empty()
+                && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                && name.bytes().next().is_some_and(|c| !c.is_ascii_digit());
+            if !valid_name
+                || self.sections.contains_key(name)
+                || matches!(
+                    name.as_str(),
+                    "text"
+                        | "rodata"
+                        | "data"
+                        | "bss"
+                        | "uninit"
+                        | "vector_table"
+                        | "got"
+                        | "stack"
+                        | "heap"
+                )
+            {
+                return Err(ConfigValidationError::InvalidNoLoadName(name.clone()));
+            }
+            if !section.alignment.is_power_of_two()
+                || section.origin.as_bytes() % section.alignment != 0
+                || section.length.as_bytes() % section.alignment != 0
+            {
+                return Err(ConfigValidationError::InvalidNoLoadAlignment(name.clone()));
+            }
+            let target = format!("NOLOAD_{}", crate::generation::section_name_to_target(name));
+            if !targets.insert(target.clone()) {
+                return Err(ConfigValidationError::DuplicateTarget(target));
+            }
+            checker.check(
+                name.clone(),
+                section.origin.as_bytes(),
+                section.length.as_bytes(),
+                None,
             )?;
         }
         Ok(())
