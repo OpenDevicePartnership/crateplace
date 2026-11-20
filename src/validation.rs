@@ -645,6 +645,17 @@ fn validate_placement(
     assignments: &DepTree,
     config: &Config,
 ) -> Result<(), ValidationProblem> {
+    if let Some(name) = symbol.section.strip_prefix('.')
+        && let Some(section) = config.noload_sections.get(name)
+    {
+        return validate_symbol_range(
+            symbol,
+            name,
+            section.origin.as_bytes(),
+            section.length.as_bytes(),
+        );
+    }
+
     let assignment = match check_custom_symbol_placement(&symbol.name, config)? {
         Some(assignment) => Some(assignment),
         None => match &symbol.class {
@@ -680,13 +691,24 @@ fn validate_placement(
         });
     }
 
-    let assigned_origin = assignment.section.origin.as_bytes();
-    let assigned_length = assignment.section.length.as_bytes();
+    validate_symbol_range(
+        symbol,
+        assignment.section_name,
+        assignment.section.origin.as_bytes(),
+        assignment.section.length.as_bytes(),
+    )
+}
 
+fn validate_symbol_range(
+    symbol: &ValidationSymbol,
+    section_name: &str,
+    assigned_origin: u64,
+    assigned_length: u64,
+) -> Result<(), ValidationProblem> {
     let assigned_end = assigned_origin
         .checked_add(assigned_length)
         .ok_or_else(|| ValidationProblem::SectionOverflow {
-            section: assignment.section_name.to_string(),
+            section: section_name.to_string(),
             start: assigned_origin,
             length: assigned_length,
         })?;
@@ -694,7 +716,7 @@ fn validate_placement(
     if symbol.address < assigned_origin || symbol.address > assigned_end {
         return Err(ValidationProblem::SymbolPlacement {
             name: symbol.name.to_string(),
-            section_name: assignment.section_name.to_string(),
+            section_name: section_name.to_string(),
             symbol_position: symbol.address,
             section_start: assigned_origin,
             section_end: assigned_end,
@@ -712,7 +734,7 @@ fn validate_placement(
     if symbol_end > assigned_end {
         return Err(ValidationProblem::SymbolTooBig {
             name: symbol.name.to_string(),
-            section_name: assignment.section_name.to_string(),
+            section_name: section_name.to_string(),
             symbol_start: symbol.address,
             symbol_end,
             section_end: assigned_end,
@@ -740,6 +762,138 @@ pub(crate) fn validate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{ByteFormat, ByteUnit};
+    use crate::deps::{Crate, SectionAssignment};
+    use cargo_metadata::semver::Version;
+    use std::collections::BTreeMap;
+
+    fn noload_fixture() -> (Config, DepTree, ValidationSymbol) {
+        let config: Config = toml::from_str(
+            r#"
+ram = { origin = "0x20000000", length = "636K" }
+[sections.flash]
+origin = "0x10000"
+length = "512K"
+[noload_sections.retained_nvram]
+origin = "0x2009FFD0"
+length = "48"
+"#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        let assignments = DepTree::from_crates(
+            "my-crate-id".to_string(),
+            BTreeMap::from([(
+                "my-crate-id".to_string(),
+                Crate {
+                    name: "my-crate".to_string(),
+                    version: Version::new(1, 0, 0),
+                    dependencies: vec![],
+                    assignment: Some(SectionAssignment {
+                        name: "flash".to_string(),
+                        priority: 0,
+                        user_assigned: true,
+                    }),
+                },
+            )]),
+        );
+        let symbol = ValidationSymbol {
+            name: "_ZN8my_crate14RETAINED_NVRAME".to_string(),
+            class: SymbolClass::RustMangled {
+                demangled: "my_crate::RETAINED_NVRAM".to_string(),
+                crate_name: "my_crate".to_string(),
+            },
+            section: ".retained_nvram".to_string(),
+            address: 0x2009_FFD0,
+            size: 48,
+        };
+        (config, assignments, symbol)
+    }
+
+    #[test]
+    fn noload_static_overrides_its_crates_flash_assignment() {
+        let (mut config, assignments, mut symbol) = noload_fixture();
+
+        assert!(validate_placement(&symbol, &assignments, &config).is_ok());
+
+        config.symbols = Some(HashMap::from([(
+            symbol.name.clone(),
+            toml::from_str("section = \"flash\"").unwrap(),
+        )]));
+        assert!(validate_placement(&symbol, &assignments, &config).is_ok());
+        config.symbols = None;
+
+        config.noload_sections.clear();
+        assert!(matches!(
+            validate_placement(&symbol, &assignments, &config),
+            Err(ValidationProblem::SymbolAssignment {
+                correct_section,
+                actual_section,
+                ..
+            }) if correct_section == "flash" && actual_section == "retained_nvram"
+        ));
+
+        symbol.section = ".flash".to_string();
+        symbol.address = 0x10000;
+        assert!(validate_placement(&symbol, &assignments, &config).is_ok());
+    }
+
+    #[test]
+    fn noload_symbols_must_fit_entirely_in_the_reservation() {
+        let (config, assignments, mut symbol) = noload_fixture();
+        let origin = symbol.address;
+
+        for address in [origin - 1, origin + 49] {
+            symbol.address = address;
+            symbol.size = 1;
+            assert!(matches!(
+                validate_placement(&symbol, &assignments, &config),
+                Err(ValidationProblem::SymbolPlacement { section_name, .. })
+                    if section_name == "retained_nvram"
+            ));
+        }
+        for (address, size) in [(origin + 47, 2), (origin + 48, 1)] {
+            symbol.address = address;
+            symbol.size = size;
+            assert!(matches!(
+                validate_placement(&symbol, &assignments, &config),
+                Err(ValidationProblem::SymbolTooBig { section_name, .. })
+                    if section_name == "retained_nvram"
+            ));
+        }
+        for (address, size) in [(origin + 44, 4), (origin + 48, 0)] {
+            symbol.address = address;
+            symbol.size = size;
+            assert!(validate_placement(&symbol, &assignments, &config).is_ok());
+        }
+    }
+
+    #[test]
+    fn noload_range_overflow_returns_contextual_errors() {
+        let (mut config, assignments, mut symbol) = noload_fixture();
+        let section = config.noload_sections.get_mut("retained_nvram").unwrap();
+        section.origin = ByteUnit::new(u64::MAX - 7, ByteFormat::Bytes);
+        section.length = ByteUnit::new(7, ByteFormat::Bytes);
+        symbol.address = u64::MAX - 1;
+        symbol.size = 2;
+
+        assert!(matches!(
+            validate_placement(&symbol, &assignments, &config),
+            Err(ValidationProblem::SymbolOverflow { start, length, .. })
+                if start == u64::MAX - 1 && length == 2
+        ));
+
+        config
+            .noload_sections
+            .get_mut("retained_nvram")
+            .unwrap()
+            .length = ByteUnit::new(8, ByteFormat::Bytes);
+        assert!(matches!(
+            validate_placement(&symbol, &assignments, &config),
+            Err(ValidationProblem::SectionOverflow { section, start, length })
+                if section == "retained_nvram" && start == u64::MAX - 7 && length == 8
+        ));
+    }
 
     #[test]
     fn extracts_crate_names_from_supported_mangling_schemes() {

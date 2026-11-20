@@ -122,5 +122,9 @@ assertions. These sections are inserted after `.uninit` in the runtime linker
 script. Names use ASCII letters, digits, and underscores, cannot start with a
 digit, and cannot conflict with runtime sections or other linker memory regions.
 
+Binary validation recognizes configured NOLOAD output sections before ordinary
+crate or symbol placement rules and checks that each symbol's full address range
+fits within its reservation.
+
 Carve reservations out of ordinary RAM explicitly; this tool does not infer a
 chip's physical memory bounds or retention capabilities.
