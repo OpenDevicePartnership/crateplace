@@ -242,17 +242,15 @@ mod tests {
 
     #[test]
     fn noload_sections_have_fixed_addresses_and_kept_inputs() {
-        let config: Config = toml::from_str(
-            r#"
-ram = { origin = "0x20000000", length = "636K" }
-[sections.flash]
-origin = "0x10000"
-length = "512K"
-[noload_sections.retained_nvram]
-origin = "0x2009FFD0"
-length = "48"
-"#,
-        )
+        let config: Config = toml::from_str(indoc::indoc! {r#"
+            ram = { origin = "0x20000000", length = "636K" }
+            [sections.flash]
+            origin = "0x10000"
+            length = "512K"
+            [noload_sections.retained_nvram]
+            origin = "0x2009FFD0"
+            length = "48"
+        "#})
         .unwrap();
         config.validate().unwrap();
         let memory = generate_memory(&config);

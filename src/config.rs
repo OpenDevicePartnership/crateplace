@@ -283,27 +283,23 @@ mod noload_tests {
     use super::*;
 
     fn config(extra: &str) -> Config {
-        toml::from_str(&format!(
-            r#"
-ram = {{ origin = "0x20000000", length = "636K" }}
-[sections.flash]
-origin = "0x10000"
-length = "512K"
-{extra}
-"#
-        ))
+        toml::from_str(&indoc::formatdoc! {r#"
+            ram = {{ origin = "0x20000000", length = "636K" }}
+            [sections.flash]
+            origin = "0x10000"
+            length = "512K"
+            {extra}
+        "#})
         .unwrap()
     }
 
     fn section(name: &str, origin: &str, length: &str, alignment: u64) -> String {
-        format!(
-            r#"
-[noload_sections.{name}]
-origin = "{origin}"
-length = "{length}"
-alignment = {alignment}
-"#
-        )
+        indoc::formatdoc! {r#"
+            [noload_sections.{name}]
+            origin = "{origin}"
+            length = "{length}"
+            alignment = {alignment}
+        "#}
     }
 
     #[test]
