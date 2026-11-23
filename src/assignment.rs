@@ -135,6 +135,7 @@ mod tests {
         crates: impl IntoIterator<Item = (&'static str, CratePlacement)>,
     ) -> Config {
         Config {
+            noload_sections: Default::default(),
             ram: Ram {
                 origin: ByteUnit::new(0, ByteFormat::Bytes),
                 length: ByteUnit::new(1, ByteFormat::Bytes),

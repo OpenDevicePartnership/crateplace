@@ -142,7 +142,7 @@ version = "0.8.9"
 criteria = "safe-to-deploy"
 
 [[exemptions.object]]
-version = "0.39.1"
+version = "0.40.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.once_cell_polyfill]]
@@ -178,8 +178,9 @@ version = "1.0.23"
 criteria = "safe-to-deploy"
 
 [[exemptions.ruzstd]]
-version = "0.8.3"
+version = "0.9.1"
 criteria = "safe-to-deploy"
+notes = "User-approved version-specific exemption pending audit. This release fixes RUSTSEC-2026-0344 and replaces vulnerable 0.8.3; this is not an audit certification."
 
 [[exemptions.semver]]
 version = "1.0.9"
